@@ -1,0 +1,309 @@
+---
+title: "NM Microbiome - 01 Data Preprocessing"
+author: "Orr Tobaly & Nikol Elyashov"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+```
+
+## 1. Setup and Library Loading
+
+```{r load-libraries}
+# Load required packages
+library(vegan)
+library(microbiome)
+library(phyloseq)
+library(qiime2R)
+library(microeco)
+library(dplyr)
+library(tidyverse)
+library(magrittr)
+library(sva)
+library(GUniFrac)
+library(ggplot2)
+library(patchwork)
+
+# Source custom functions
+source("../R/preprocessing_functions.R")
+source("../R/visualization_functions.r")
+
+# Set data paths
+raw_data_dir <- "../data/raw/"
+processed_data_dir <- "../data/processed/"
+
+# Create processed directory if it doesn't exist
+if(!dir.exists(processed_data_dir)) {
+  dir.create(processed_data_dir, recursive = TRUE)
+}
+```
+
+## 2. Data Import
+
+```{r import-data}
+# Import QIIME2 data using our custom function
+dataset <- import_qiime2_data(
+  metadata_path = file.path(raw_data_dir, "00.metadata.combined.2020_2021.tsv"),
+  feature_table_path = file.path(raw_data_dir, "table-dada2.qza"),
+  taxonomy_path = file.path(raw_data_dir, "taxonomy-dada2.qza"),
+  tree_path = file.path(raw_data_dir, "rooted-tree-dada2.qza")
+)
+
+# Basic dataset summary
+print(dataset)
+```
+
+## 3. Data Inspection
+
+```{r data-inspection}
+# Sample count per time point
+table(dataset$sample_table$time)
+
+# Sample count per case/control status
+table(dataset$sample_table$case_control)
+
+# Sample count per year
+table(dataset$sample_table$year)
+
+# Sample count per batch
+table(dataset$sample_table$batch)
+
+# Check for specific issues with batch 4
+batch4_samples <- dataset$sample_table[dataset$sample_table$batch == 4, ]
+print(paste("Number of samples in batch 4:", nrow(batch4_samples)))
+if(nrow(batch4_samples) > 0) {
+  print(batch4_samples)
+}
+
+# Calculate basic taxonomic composition
+tax_summary <- dataset$tax_table %>%
+  as.data.frame() %>%
+  group_by(Phylum) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+# Display top 10 phyla
+head(tax_summary, 10)
+```
+
+## 4. Calculate Beta Diversity and Visualize Initial Distribution
+
+```{r beta-diversity}
+# Calculate beta diversity
+dataset$cal_betadiv(unifrac = TRUE)
+
+# Create ordination plots for potential batch effects and biological factors
+# Using the simplified plot_pcoa function
+year_plot <- plot_pcoa(
+  dataset = dataset,
+  factor_name = "year", 
+  title = "Samples by Year"
+)
+
+batch_plot <- plot_pcoa(
+  dataset = dataset,
+  factor_name = "batch", 
+  title = "Samples by Sequencing Batch"
+)
+
+time_plot <- plot_pcoa(
+  dataset = dataset,
+  factor_name = "time", 
+  title = "Samples by Time Point"
+)
+
+carriage_plot <- plot_pcoa(
+  dataset = dataset,
+  factor_name = "case_control", 
+  title = "Samples by NM Carriage Status"
+)
+
+# Display the plots
+year_plot
+batch_plot
+time_plot
+carriage_plot
+```
+
+## 5. Batch Effect Correction
+
+```{r batch-correction}
+# Clone the original dataset for comparison
+dataset_original <- dataset$clone()
+
+# Apply batch correction using the custom function
+# Using year as the batch variable
+dataset_corrected <- correct_batch_effect(
+  dataset = dataset, 
+  batch_var = "year",
+  method = "simple_log",
+  round_counts = TRUE
+)
+
+# Calculate beta diversity for the corrected dataset
+dataset_corrected$cal_betadiv(unifrac = TRUE)
+
+# Create comparison plots using the simplified function
+comparison_plots <- compare_correction_plots(
+  dataset_original = dataset_original,
+  dataset_corrected = dataset_corrected,
+  factor_names = c("year", "batch", "time", "case_control"),
+  plot_titles = c(
+    "Batch Effect by Year",
+    "Batch Effect by Sequencing Batch",
+    "Samples by Time Point",
+    "Samples by NM Carriage Status"
+  )
+)
+
+# Display the comparison plots
+comparison_plots$year
+comparison_plots$batch
+comparison_plots$time
+comparison_plots$case_control
+
+# Update our dataset to use the corrected one
+dataset <- dataset_corrected
+```
+
+## 6. Longitudinal Carriage Status Classification
+
+```{r carriage-classification}
+# Classify subjects based on NM carriage dynamics
+carriage_patterns <- classify_carriage_status(dataset)
+
+# Display the distribution of carriage status categories
+table(carriage_patterns$carriage_status)
+table(carriage_patterns$carriage_group)
+
+# Create expanded susceptibility grouping
+expanded_patterns <- create_susceptibility_groups(carriage_patterns)
+
+# Get list of PIDs showing acquisition
+acquisition_pids <- expanded_patterns %>%
+  filter(shows_acquisition == TRUE) %>%
+  pull(pid)
+
+# Print information about the expanded group
+cat("Number of subjects in expanded acquisition group:", length(acquisition_pids), "\n")
+
+# Update the dataset with carriage classifications
+dataset <- update_dataset_with_carriage_status(
+  dataset = dataset,
+  carriage_patterns = carriage_patterns,
+  expanded_patterns = expanded_patterns
+)
+
+# Check the distribution of the new groupings
+table(dataset$sample_table$carriage_group, dataset$sample_table$time)
+table(dataset$sample_table$susceptibility_group, dataset$sample_table$time)
+```
+
+## 7. Export Preprocessed Data
+
+```{r export-data}
+# Save the dataset as RDS for later use
+saveRDS(dataset, file = file.path(processed_data_dir, "preprocessed_microbiome_dataset.rds"))
+
+# Convert to phyloseq for compatibility with other packages
+ps_object <- convert_to_phyloseq(dataset)
+saveRDS(ps_object, file = file.path(processed_data_dir, "preprocessed_phyloseq.rds"))
+
+# Export carriage classifications for reference
+write.csv(
+  carriage_patterns,
+  file = file.path(processed_data_dir, "carriage_classifications.csv"),
+  row.names = FALSE
+)
+
+# Create and save a summary of the preprocessing
+preprocessing_summary <- list(
+  sample_counts = list(
+    total_samples = nrow(dataset$sample_table),
+    samples_by_time = table(dataset$sample_table$time),
+    samples_by_carriage = table(dataset$sample_table$case_control),
+    samples_by_carriage_group = table(dataset$sample_table$carriage_group),
+    samples_by_susceptibility = table(dataset$sample_table$susceptibility_group)
+  ),
+  feature_counts = list(
+    total_features = nrow(dataset$otu_table),
+    features_by_phylum = tax_summary
+  ),
+  preprocessing_steps = c(
+    "Imported QIIME2 data",
+    "Filtered non-bacterial features and contaminants",
+    "Applied batch correction",
+    "Classified longitudinal carriage patterns",
+    "Created expanded susceptibility grouping"
+  )
+)
+
+saveRDS(preprocessing_summary, file = file.path(processed_data_dir, "preprocessing_summary.rds"))
+```
+
+## 8. Create Basic Visualizations of Processed Data
+
+```{r final-visualization}
+# Make sure alpha and beta diversity are calculated first
+if(is.null(dataset$alpha_diversity)) {
+  dataset$cal_alphadiv(measures = c("Shannon", "Simpson", "Observed"))
+}
+if(is.null(dataset$beta_diversity)) {
+  dataset$cal_betadiv(method = c("bray", "jaccard"))
+}
+
+# Taxonomic composition by carriage group
+taxa_comp_plot <- plot_taxa_composition(
+  dataset = dataset,
+  tax_level = "Genus",
+  group_var = "carriage_group",
+  n_taxa = 15,
+  title = "Taxonomic Composition by Carriage Group"
+)
+
+# Alpha diversity by carriage group
+alpha_div_plot <- plot_alpha_diversity(
+  dataset = dataset,
+  group_var = "carriage_group",
+  title = "Alpha Diversity by Carriage Group"
+)
+
+# Longitudinal PCoA for carriage groups
+longitudinal_pcoa <- plot_longitudinal_pcoa(
+  dataset = dataset,
+  subject_var = "pid",
+  time_var = "time",
+  group_var = "carriage_group",
+  title = "Longitudinal Microbiome Trajectories by Carriage Group"
+)
+
+# Display the plots
+print(taxa_comp_plot)
+print(alpha_div_plot)
+print(longitudinal_pcoa)
+
+# Save the plots
+ggsave(file.path(processed_data_dir, "taxa_composition.png"), taxa_comp_plot, width = 12, height = 8)
+ggsave(file.path(processed_data_dir, "alpha_diversity.png"), alpha_div_plot, width = 12, height = 8)
+ggsave(file.path(processed_data_dir, "longitudinal_pcoa.png"), longitudinal_pcoa, width = 12, height = 8)
+```
+
+## 9. Session Info
+
+```{r session-info}
+sessionInfo()
+```

@@ -1,0 +1,552 @@
+---
+title: "NM Microbiome - 02 Susceptibility Analysis"
+author: "Orr Tobaly & Nikol Elyashov"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+```
+
+## 1. Setup and Library Loading
+
+```{r load-libraries}
+# Load required packages
+library(phyloseq)
+library(ANCOMBC)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(readxl)
+library(DT)
+library(patchwork)
+library(microbiome)
+library(viridis)
+
+# Source custom functions
+source("../R/preprocessing_functions.R")
+source("../R/differential_abundance.r")
+source("../R/visualization_functions.r")
+
+# Set data paths
+processed_data_dir <- "../data/processed/"
+results_dir <- "../results/"
+
+# Create results directory if it doesn't exist
+if(!dir.exists(results_dir)) {
+  dir.create(results_dir, recursive = TRUE)
+}
+```
+
+## 2. Load Preprocessed Data
+
+```{r load-data}
+# Load the preprocessed phyloseq object
+ps <- readRDS(file.path(processed_data_dir, "preprocessed_phyloseq.rds"))
+
+# Load the microbiome dataset for additional functionality if needed
+dataset <- readRDS(file.path(processed_data_dir, "preprocessed_microbiome_dataset.rds"))
+
+# Check that our carriage classifications are present
+print("Carriage group distribution:")
+table(sample_data(ps)$carriage_group)
+
+print("Susceptibility group distribution:")
+table(sample_data(ps)$susceptibility_group)
+
+# Import demographic data for additional covariates
+demographic_data <- read_excel("../data/raw/demographic data _Jan2022_final.YM.20241230.xlsx")
+
+# Clean and prepare demographic data
+demographic_data <- demographic_data %>%
+  mutate(
+    pid = as.character(pid),  # Ensure pid is character for joining
+    boardingschool = factor(boardingschool),
+    selfsmoking = factor(selfsmoking),
+    secondsmoker = factor(secondsmoker),
+    AB_month = factor(AB_month),  # Antibiotic use in previous month
+    AB_year = factor(AB_year)     # Antibiotic use in previous year
+  )
+
+# Merge relevant demographic variables with sample data
+# First, get the current sample data
+sample_data_df <- data.frame(sample_data(ps))
+
+# Ensure 'pid' is preserved as the identifier
+sample_data_with_demo <- sample_data_df %>%
+  left_join(demographic_data %>% 
+              select(pid, boardingschool, selfsmoking, secondsmoker, 
+                     AB_month, AB_year, yearofbirth, family_members), 
+            by = "pid")
+
+# Rebuild the sample_data ensuring original sample names are preserved
+rownames(sample_data_with_demo) <- sample_data_df$SampleID
+
+# Update the phyloseq object with new sample data
+sample_data(ps) <- sample_data(sample_data_with_demo)
+
+# Verify the update worked
+print("Updated sample data columns:")
+names(sample_data(ps))
+```
+
+## 3. Analysis Design and Data Subset Selection
+
+This analysis focuses on identifying microbiome signatures associated with susceptibility to NM acquisition. We'll examine differences between individuals who acquired NM at some point ("Ever_acquired_NM") versus those who consistently remained non-carriers ("Never_acquired_NM").
+
+```{r subset-selection}
+# We'll focus on baseline samples (time point 0) to identify initial microbiome differences
+ps_baseline <- subset_samples(ps, time == "0")
+
+# Create susceptibility analysis subset
+ps_suscept <- subset_samples(ps_baseline, 
+                            susceptibility_group %in% c("Ever_acquired_NM", "Never_acquired_NM"))
+
+# Check sample sizes for our analysis
+print("Sample counts for susceptibility analysis:")
+print(table(sample_data(ps_suscept)$susceptibility_group))
+
+# Verify that we have adequate data for comparison
+if(min(table(sample_data(ps_suscept)$susceptibility_group)) < 10) {
+  warning("Warning: One of the susceptibility groups has fewer than 10 samples!")
+}
+```
+
+## 4. Exploratory Analysis of Susceptibility Groups
+
+Before conducting differential abundance analysis, we'll explore alpha and beta diversity patterns and overall taxonomic composition across our susceptibility groups.
+
+```{r exploratory-analysis}
+# Plot alpha diversity by susceptibility group
+alpha_div_metrics <- c("Shannon", "Simpson", "Observed")
+alpha_plots <- list()
+
+for(metric in alpha_div_metrics) {
+  alpha_plots[[metric]] <- plot_richness(ps_suscept, x = "susceptibility_group", measures = metric) +
+    geom_boxplot(alpha = 0.6) +
+    labs(title = paste(metric, "Diversity by Susceptibility Group"),
+         x = "Susceptibility Group") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+# Combine alpha diversity plots
+wrap_plots(alpha_plots, ncol = 2)
+
+# Beta diversity analysis (PCoA) by susceptibility group
+ord <- ordinate(ps_suscept, method = "PCoA", distance = "bray")
+beta_plot <- plot_ordination(ps_suscept, ord, color = "susceptibility_group") +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse() +
+  labs(title = "PCoA of microbiome composition by susceptibility group",
+       color = "Susceptibility Group") +
+  theme_minimal()
+print(beta_plot)
+
+# PERMANOVA test for statistical significance of beta diversity differences
+permanova_result <- vegan::adonis2(
+  phyloseq::distance(ps_suscept, method = "bray") ~ 
+    phyloseq::sample_data(ps_suscept)$susceptibility_group, 
+  permutations = 999
+)
+print("PERMANOVA results:")
+print(permanova_result)
+
+# Taxonomic composition by susceptibility group
+ps_genus <- tax_glom(ps_suscept, taxrank = "Genus")
+top_genera <- names(sort(taxa_sums(ps_genus), decreasing = TRUE))[1:15]
+ps_top_genera <- prune_taxa(top_genera, ps_genus)
+
+# Convert to relative abundance
+ps_top_genera_rel <- transform_sample_counts(ps_top_genera, function(x) x / sum(x))
+
+# Plot taxonomic composition
+taxa_comp_plot <- plot_bar(ps_top_genera_rel, fill = "Genus", x = "susceptibility_group") +
+  labs(title = "Relative abundance of top 15 genera by susceptibility group",
+       x = "Susceptibility Group", 
+       y = "Relative Abundance") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom")
+print(taxa_comp_plot)
+```
+
+## 5. Differential Abundance Analysis with ANCOM-BC2
+
+We'll use ANCOM-BC2 to identify differentially abundant taxa between susceptibility groups, while accounting for potential confounding factors.
+
+```{r ancom-bc2-analysis}
+# Set random seed for reproducibility
+set.seed(123)
+
+# Run ANCOM-BC2 using our custom function
+ancombc2_result <- run_ancombc2(
+  ps_object = ps_suscept,
+  tax_level = "Genus",
+  formula_str = "susceptibility_group + selfsmoking + boardingschool + AB_month",
+  group_var = "susceptibility_group",
+  prv_cut = 0.025,
+  seed = 123
+)
+
+# Save the results
+saveRDS(ancombc2_result, file = file.path(results_dir, "ancombc2_susceptibility_results.rds"))
+
+# Extract basic results to check
+res_primary <- ancombc2_result$res
+print(paste("Total number of taxa analyzed:", nrow(res_primary)))
+
+# Get the column names related to log fold changes and differential abundance
+lfc_cols <- grep("^lfc_", colnames(res_primary), value = TRUE)
+diff_cols <- grep("^diff_", colnames(res_primary), value = TRUE)
+print("Comparisons in the results:")
+print(gsub("^lfc_", "", lfc_cols))
+
+# Count the number of significant taxa for each comparison
+for(i in seq_along(diff_cols)) {
+  comparison <- gsub("^diff_", "", diff_cols[i])
+  n_sig <- sum(res_primary[[diff_cols[i]]] == 1)
+  n_sig_with_ss <- sum(res_primary[[diff_cols[i]]] == 1 & 
+                       res_primary[[paste0("passed_ss_", comparison)]] == TRUE)
+  
+  print(paste0("Comparison ", comparison, ":"))
+  print(paste0("  - Significant taxa: ", n_sig))
+  print(paste0("  - Significant taxa passing sensitivity score: ", n_sig_with_ss))
+}
+```
+
+## 6. Visualization of Significant Taxa
+
+```{r visualize-results}
+# Visualize ANCOM-BC2 results using our custom function
+ancombc2_vis <- visualize_ancombc2_results(
+  ancombc2_result,
+  title = "Susceptibility Analysis"
+)
+
+# Display the plots
+if(length(ancombc2_vis$plots) > 0) {
+  for(plot_name in names(ancombc2_vis$plots)) {
+    print(ancombc2_vis$plots[[plot_name]])
+  }
+} else {
+  print("No significant taxa found to visualize.")
+}
+
+# Display a summary table of significant taxa
+display_results <- function(vis_results, title) {
+  cat("\n====== ", title, " ======\n")
+  
+  # Check if there are significant results
+  if(length(vis_results$sig_taxa) == 0) {
+    cat("No significant differential abundance detected.\n")
+    return(NULL)
+  }
+  
+  # Display results for each comparison
+  for(comparison in names(vis_results$sig_taxa)) {
+    sig_taxa <- vis_results$sig_taxa[[comparison]]
+    
+    if(nrow(sig_taxa) > 0) {
+      cat("\nComparison:", comparison, "\n")
+      cat("Number of significant taxa:", nrow(sig_taxa), "\n")
+      
+      # Create a data frame for display
+      result_df <- sig_taxa %>% 
+        select(taxon, lfc) %>%
+        arrange(desc(abs(lfc)))
+      
+      # Display the data frame
+      print(result_df)
+    }
+  }
+}
+
+# Display the results summary
+display_results(ancombc2_vis, "SIGNIFICANT TAXA FOR SUSCEPTIBILITY ANALYSIS")
+
+# Save significant taxa results to CSV
+for(comparison in names(ancombc2_vis$sig_taxa)) {
+  if(length(ancombc2_vis$sig_taxa[[comparison]]) > 0 && nrow(ancombc2_vis$sig_taxa[[comparison]]) > 0) {
+    write.csv(
+      ancombc2_vis$sig_taxa[[comparison]],
+      file = file.path(results_dir, paste0("sig_taxa_", comparison, ".csv")),
+      row.names = FALSE
+    )
+  }
+}
+
+# Create a heatmap of significant taxa abundances
+create_abundance_heatmap <- function(ps_obj, sig_taxa_names, group_var) {
+  # Check if we have significant taxa
+  if(length(sig_taxa_names) == 0) {
+    return(NULL)
+  }
+  
+  # Subset to significant taxa
+  ps_subset <- prune_taxa(sig_taxa_names, ps_obj)
+  
+  # Transform to relative abundance
+  ps_rel <- transform_sample_counts(ps_subset, function(x) x / sum(x))
+  
+  # Extract abundance data
+  abund_mat <- as(otu_table(ps_rel), "matrix")
+  if(taxa_are_rows(ps_rel)) {
+    abund_mat <- t(abund_mat)
+  }
+  
+  # Get sample metadata
+  sample_meta <- data.frame(sample_data(ps_rel))
+  group_data <- sample_meta[[group_var]]
+  
+  # Create a data frame for ggplot
+  abund_df <- as.data.frame(abund_mat)
+  abund_df$SampleID <- rownames(abund_df)
+  abund_df$Group <- group_data
+  
+  # Reshape to long format
+  abund_long <- abund_df %>%
+    pivot_longer(cols = -c(SampleID, Group),
+                names_to = "Taxon",
+                values_to = "Abundance")
+  
+  # Create heatmap
+  heatmap_plot <- ggplot(abund_long, aes(x = SampleID, y = Taxon, fill = Abundance)) +
+    geom_tile() +
+    facet_grid(. ~ Group, scales = "free_x", space = "free_x") +
+    scale_fill_viridis_c(name = "Relative\nAbundance") +
+    labs(title = paste("Abundance of Significant Taxa by", group_var),
+         x = "Sample", y = "Taxon") +
+    theme_minimal() +
+    theme(axis.text.x = element_blank(),
+          axis.ticks.x = element_blank())
+  
+  return(heatmap_plot)
+}
+
+# Extract significant taxa across all comparisons
+all_sig_taxa <- unique(unlist(lapply(ancombc2_vis$sig_taxa, function(x) x$taxon)))
+
+# Create and display heatmap if we have significant taxa
+if(length(all_sig_taxa) > 0) {
+  heatmap_plot <- create_abundance_heatmap(ps_suscept, all_sig_taxa, "susceptibility_group")
+  if(!is.null(heatmap_plot)) {
+    print(heatmap_plot)
+    ggsave(file.path(results_dir, "susceptibility_sig_taxa_heatmap.png"), 
+           heatmap_plot, width = 12, height = 8)
+  }
+}
+```
+
+## 7. Covariate Importance Analysis
+
+In addition to susceptibility status, we included several covariates in our model. Here we'll examine their associations with taxa abundance.
+
+```{r covariate-importance}
+# Extract covariate results from ANCOM-BC2
+covariate_results <- list()
+covariate_cols <- c("selfsmoking", "boardingschool", "AB_month")
+
+for(covar in covariate_cols) {
+  # Get relevant columns for this covariate
+  lfc_col <- grep(paste0("^lfc_", covar), colnames(res_primary), value = TRUE)
+  diff_col <- grep(paste0("^diff_", covar), colnames(res_primary), value = TRUE)
+  
+  if(length(lfc_col) > 0 && length(diff_col) > 0) {
+    # Filter for significant taxa associated with this covariate
+    sig_taxa <- res_primary %>%
+      filter(!!sym(diff_col) == 1) %>%
+      select(taxon, !!sym(lfc_col)) %>%
+      rename(lfc = !!sym(lfc_col)) %>%
+      arrange(desc(abs(lfc)))
+    
+    covariate_results[[covar]] <- sig_taxa
+    
+    # Print summary
+    cat("\nSignificant taxa associated with", covar, ":", nrow(sig_taxa), "\n")
+    if(nrow(sig_taxa) > 0) {
+      print(head(sig_taxa, 10))
+    }
+  }
+}
+
+# Visualize significant taxa for each covariate
+for(covar in names(covariate_results)) {
+  if(nrow(covariate_results[[covar]]) > 0) {
+    # Limit to top 15 taxa by absolute log fold change
+    top_n_taxa <- min(nrow(covariate_results[[covar]]), 15)
+    plot_data <- covariate_results[[covar]][1:top_n_taxa, ]
+    
+    # Create bar plot
+    p <- ggplot(plot_data, aes(x = reorder(taxon, lfc), y = lfc, 
+                             fill = lfc > 0)) +
+      geom_bar(stat = "identity") +
+      scale_fill_manual(values = c("#619CFF", "#F8766D"), 
+                      name = "Direction", 
+                      labels = c("Decreased", "Increased")) +
+      labs(title = paste("Taxa associated with", covar),
+           x = "Taxon",
+           y = "Log Fold Change") +
+      coord_flip() +
+      theme_minimal()
+    
+    print(p)
+    
+    # Save the plot
+    ggsave(file.path(results_dir, paste0("covariate_", covar, "_taxa.png")), 
+           p, width = 10, height = 6)
+  }
+}
+```
+
+## 8. Interpretation and Biological Significance
+
+In this section, we'll interpret the biological significance of the differentially abundant taxa identified in our analysis.
+
+```{r biological-interpretation}
+# Extract the names of significant taxa that passed sensitivity score filter
+sig_taxa_passing_ss <- list()
+
+for(comparison in names(ancombc2_vis$sig_taxa)) {
+  sig_taxa_df <- ancombc2_vis$sig_taxa[[comparison]]
+  if(!is.null(sig_taxa_df) && nrow(sig_taxa_df) > 0) {
+    # Get taxon names, assuming they're already filtered for significance and sensitivity
+    sig_taxa_passing_ss[[comparison]] <- sig_taxa_df$taxon
+  }
+}
+
+# Get the full taxonomy information for significant taxa
+get_taxa_table <- function(ps_obj, taxa_names) {
+  if(length(taxa_names) == 0) return(NULL)
+  
+  # Extract tax table
+  tax_table <- as.data.frame(tax_table(ps_obj))
+  
+  # Filter for significant taxa
+  sig_tax_table <- tax_table[rownames(tax_table) %in% taxa_names, ]
+  
+  # Add taxon name as a column
+  sig_tax_table$taxon <- rownames(sig_tax_table)
+  
+  return(sig_tax_table)
+}
+
+# Print taxonomic information for significant taxa
+for(comparison in names(sig_taxa_passing_ss)) {
+  cat("\n=== Taxonomy of significant taxa for", comparison, "===\n")
+  taxa_names <- sig_taxa_passing_ss[[comparison]]
+  
+  if(length(taxa_names) > 0) {
+    taxa_table <- get_taxa_table(ps_suscept, taxa_names)
+    if(!is.null(taxa_table)) {
+      print(taxa_table)
+    }
+  } else {
+    cat("No significant taxa passing sensitivity score filter\n")
+  }
+}
+
+# Summarize key findings
+cat("\n=== Key findings from susceptibility analysis ===\n")
+
+# Count total significant taxa
+total_sig_taxa <- unique(unlist(sig_taxa_passing_ss))
+cat("Total unique significant taxa identified:", length(total_sig_taxa), "\n")
+
+# Highlight taxonomic patterns
+if(length(total_sig_taxa) > 0) {
+  all_tax_table <- get_taxa_table(ps_suscept, total_sig_taxa)
+  if(!is.null(all_tax_table)) {
+    # Summarize at Phylum level
+    phylum_summary <- all_tax_table %>%
+      group_by(Phylum) %>%
+      summarise(count = n()) %>%
+      arrange(desc(count))
+    
+    cat("\nPhylum distribution of significant taxa:\n")
+    print(phylum_summary)
+    
+    # Summarize at Family level
+    family_summary <- all_tax_table %>%
+      group_by(Family) %>%
+      summarise(count = n()) %>%
+      arrange(desc(count))
+    
+    cat("\nFamily distribution of significant taxa:\n")
+    print(head(family_summary, 10))
+  }
+} else {
+  cat("No significant taxa to summarize taxonomic patterns\n")
+}
+```
+
+## 9. Export Results and Visualizations
+
+```{r export-results}
+# Save the full ANCOM-BC2 results object
+saveRDS(ancombc2_result, file = file.path(results_dir, "susceptibility_ancombc2_results.rds"))
+
+# Save the visualization results
+saveRDS(ancombc2_vis, file = file.path(results_dir, "susceptibility_visualization_results.rds"))
+
+# Create a summary of significant findings
+susceptibility_summary <- list(
+  analysis_info = list(
+    date = Sys.Date(),
+    samples_analyzed = nrow(sample_data(ps_suscept)),
+    group_sizes = table(sample_data(ps_suscept)$susceptibility_group),
+    covariates = c("selfsmoking", "boardingschool", "AB_month")
+  ),
+  significance_summary = list(
+    total_taxa_analyzed = nrow(res_primary),
+    significant_taxa = lapply(diff_cols, function(col) sum(res_primary[[col]] == 1)),
+    significant_taxa_passing_ss = lapply(diff_cols, function(col) {
+      ss_col <- gsub("diff_", "passed_ss_", col)
+      sum(res_primary[[col]] == 1 & res_primary[[ss_col]] == TRUE)
+    })
+  ),
+  differentially_abundant_taxa = sig_taxa_passing_ss
+)
+
+# Save the summary
+saveRDS(susceptibility_summary, 
+       file = file.path(results_dir, "susceptibility_analysis_summary.rds"))
+
+# Save a text summary of results
+sink(file = file.path(results_dir, "susceptibility_results_summary.txt"))
+cat("=== NM SUSCEPTIBILITY ANALYSIS RESULTS ===\n\n")
+cat("Analysis Date:", as.character(Sys.Date()), "\n")
+cat("Samples Analyzed:", nrow(sample_data(ps_suscept)), "\n")
+cat("Group Sizes:\n")
+print(table(sample_data(ps_suscept)$susceptibility_group))
+cat("\n")
+
+cat("=== SIGNIFICANT TAXA ===\n\n")
+display_results(ancombc2_vis, "SIGNIFICANT TAXA FOR SUSCEPTIBILITY ANALYSIS")
+cat("\n")
+
+cat("=== PERMANOVA RESULTS ===\n\n")
+print(permanova_result)
+cat("\n")
+
+sink()
+```
+
+## 10. Session Info
+
+```{r session-info}
+sessionInfo()
+```
