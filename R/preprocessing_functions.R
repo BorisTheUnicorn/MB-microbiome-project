@@ -33,9 +33,15 @@
 import_qiime2_data <- function(metadata_path, feature_table_path, taxonomy_path, tree_path) {
   # Import data
   metadata <- read_q2metadata(metadata_path)
+#  metadata <- metadata %>% filter(time == 2) # time filter
   taxa <- read_qza(taxonomy_path)$data %>% parse_taxonomy()
   feature_table <- as.data.frame(read_qza(feature_table_path)$data)
   tree <- read_qza(tree_path)$data
+  demodata <- as.data.frame(read_excel(file.path(raw_data_dir, "demographic data _Jan2022_final.YM.20241230.xlsx"))) %>% 
+    select(c('pid','cohort'))
+  demodata$pid <- as.factor(demodata$pid)
+  demodata$cohort <- as.factor(demodata$cohort)
+  metadata <- left_join(metadata,demodata,by = 'pid')
   
   # Set sample IDs as rownames for metadata
   rownames(metadata) <- metadata[,1]
