@@ -157,11 +157,33 @@ carriage_plot <- plot_pcoa(
   title = "Samples by NM Carriage Status"
 )
 
+# Additional temporal and cohort PCoA plots
+collection_date_plot <- plot_pcoa(
+  dataset = dataset,
+  factor_name = "collection_date", 
+  title = "Samples by Collection Date"
+)
+
+season_plot <- plot_pcoa(
+  dataset = dataset,
+  factor_name = "season", 
+  title = "Samples by Season"
+)
+
+cohort_plot <- plot_pcoa(
+  dataset = dataset,
+  factor_name = "cohort", 
+  title = "Samples by Cohort"
+)
+
 # Display the plots
 year_plot
 batch_plot
 time_plot
 carriage_plot
+collection_date_plot
+season_plot
+cohort_plot
 ```
 
 ## 5. Batch Effect Correction
@@ -182,16 +204,19 @@ dataset_corrected <- correct_batch_effect(
 # Calculate beta diversity for the corrected dataset
 dataset_corrected$cal_betadiv(unifrac = TRUE)
 
-# Create comparison plots using the simplified function
+# Create comparison plots with additional temporal variables
 comparison_plots <- compare_correction_plots(
   dataset_original = dataset_original,
   dataset_corrected = dataset_corrected,
-  factor_names = c("year", "batch", "time", "case_control"),
+  factor_names = c("year", "batch", "time", "case_control", "collection_date", "season", "cohort"),
   plot_titles = c(
     "Batch Effect by Year",
     "Batch Effect by Sequencing Batch",
     "Samples by Time Point",
-    "Samples by NM Carriage Status"
+    "Samples by NM Carriage Status",
+    "Samples by Collection Date",
+    "Samples by Season",
+    "Samples by Recruitment Cohort"
   )
 )
 
@@ -200,6 +225,9 @@ comparison_plots$year
 comparison_plots$batch
 comparison_plots$time
 comparison_plots$case_control
+comparison_plots$collection_date
+comparison_plots$season
+comparison_plots$cohort
 
 # Update our dataset to use the corrected one
 dataset <- dataset_corrected
