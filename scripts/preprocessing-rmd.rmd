@@ -33,10 +33,11 @@ library(microeco)
 library(dplyr)
 library(tidyverse)
 library(magrittr)
-library(sva)
 library(GUniFrac)
 library(ggplot2)
 library(patchwork)
+library(readxl)
+library(sva)
 
 # Source custom functions
 source("../R/preprocessing_functions.R")
