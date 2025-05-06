@@ -64,6 +64,30 @@ dataset <- import_qiime2_data(
   tree_path = file.path(raw_data_dir, "rooted-tree-dada2.qza")
 )
 
+# Apply the function to create enhanced time variables
+dataset <- create_enhanced_time_variables(dataset)
+
+# Verify the new variables
+time_summary <- dataset$sample_table %>%
+  group_by(cohort, time, collection_date, season) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  arrange(collection_date)
+
+print("Summary of time variables:")
+print(time_summary)
+
+# Visualize sample distribution across time
+time_dist_plot <- ggplot(dataset$sample_table, 
+                         aes(x = collection_date, fill = season)) +
+  geom_bar() +
+  labs(title = "Sample Distribution by Collection Date",
+       x = "Collection Date", 
+       y = "Number of Samples") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(time_dist_plot)
+
 # Basic dataset summary
 print(dataset)
 ```

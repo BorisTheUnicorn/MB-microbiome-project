@@ -60,6 +60,92 @@ import_qiime2_data <- function(metadata_path, feature_table_path, taxonomy_path,
   return(dataset)
 }
 
+#' Create Enhanced Time Variables
+#'
+#' Creates meaningful time variables based on cohort and time offset information
+#' using vectorized operations and working directly with year-month combinations
+#'
+#' @param dataset A microtable object
+#' @param cohort_var The name of the cohort variable (default: "cohort")
+#' @param time_var The name of the time offset variable (default: "time")
+#' @return The dataset with enhanced time variables added
+#' @export
+create_enhanced_time_variables <- function(dataset, cohort_var = "cohort", time_var = "time") {
+  # Clone the dataset to avoid modifying the original
+  dataset_enhanced <- dataset$clone()
+  
+  # Define cohort base months and years
+  cohort_base_months <- c("1" = 3, "2" = 8, "3" = 11)  # Mar, Aug, Nov
+  cohort_base_year <- 2019
+  
+  # Store current locale
+  current_locale <- Sys.getlocale("LC_TIME")
+  
+  # Temporarily set locale to English
+  Sys.setlocale("LC_TIME", "C")
+  
+  # Add enhanced time variables using vectorized operations
+  dataset_enhanced$sample_table <- dataset_enhanced$sample_table %>%
+    mutate(
+      # Create base month and year based on cohort
+      base_month = unname(cohort_base_months[as.character(!!sym(cohort_var))]),
+      
+      # Calculate actual collection month (base month + time offset)
+      collection_month = base_month + as.numeric(as.character(!!sym(time_var))),
+      collection_year = cohort_base_year + floor((collection_month - 1) / 12),  # Adjust year if month > 12
+      collection_month = ((collection_month - 1) %% 12) + 1,  # Adjust month if > 12
+      
+      # Create full date object (first day of the month)
+      collection_date_full = as.Date(paste0(
+        collection_year, "-", 
+        formatC(collection_month, width = 2, flag = "0"), 
+        "-01"
+      )),
+      
+      # Format as MMM-YY string for display - using English month abbreviations
+      collection_date_str = paste0(
+        month.abb[collection_month], "-", 
+        substr(as.character(collection_year), 3, 4)
+      ),
+      
+      # Calculate months since study start (March 2019)
+      months_since_start = (collection_year - cohort_base_year) * 12 + 
+        (collection_month - cohort_base_months["1"]),
+      
+      # Determine season
+      season = factor(case_when(
+        collection_month %in% c(3, 4, 5) ~ "Spring",
+        collection_month %in% c(6, 7, 8) ~ "Summer",
+        collection_month %in% c(9, 10, 11) ~ "Fall",
+        collection_month %in% c(12, 1, 2) ~ "Winter"
+      ), levels = c("Winter", "Spring", "Summer", "Fall"))
+    )
+  
+  # Get unique dates and sort them chronologically
+  unique_dates <- dataset_enhanced$sample_table %>%
+    select(collection_date_str, collection_date_full) %>%
+    distinct() %>%
+    arrange(collection_date_full) %>%
+    pull(collection_date_str)
+  
+  # Create the ordered factor for collection_date
+  dataset_enhanced$sample_table <- dataset_enhanced$sample_table %>%
+    mutate(
+      collection_date = factor(
+        collection_date_str, 
+        levels = unique_dates, 
+        ordered = TRUE
+      )
+    ) %>%
+    # Remove temporary columns
+    select(-base_month, -collection_month, -collection_year, -collection_date_str)
+  
+  # Restore original locale
+  Sys.setlocale("LC_TIME", current_locale)
+  
+  return(dataset_enhanced)
+}
+
 #' Rarefy Samples to Equal Depth
 #'
 #' Rarefies all samples to the same sequencing depth
