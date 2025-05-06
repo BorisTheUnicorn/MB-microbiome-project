@@ -196,7 +196,7 @@ set.seed(123)
 ancombc2_result <- ancombc2(
   data = ps_suscept_original,
   tax_level = "Genus",
-  fix_formula = "carriage_group + selfsmoking + boardingschool + AB_month",
+  fix_formula = "carriage_group + cohort + selfsmoking + boardingschool + AB_month",
   rand_formula = NULL,
   p_adj_method = "holm",
   pseudo_sens = TRUE,
@@ -213,15 +213,15 @@ ancombc2_result <- ancombc2(
   verbose = TRUE
 )
 
-# Run ANCOM-BC2 using our custom function, now using carriage_group
-ancombc2_result <- run_ancombc2(
-  ps_object = ps_suscept_original,
-  tax_level = "Genus",
-  formula_str = "carriage_group + selfsmoking + boardingschool + AB_month",
-  group_var = "carriage_group",
-  prv_cut = 0.025,
-  seed = 123
-)
+# # Run ANCOM-BC2 using our custom function, now using carriage_group
+# ancombc2_result <- run_ancombc2(
+#   ps_object = ps_suscept_original,
+#   tax_level = "Genus",
+#   formula_str = "carriage_group + selfsmoking + boardingschool + AB_month",
+#   group_var = "carriage_group",
+#   prv_cut = 0.025,
+#   seed = 123
+# )
 
 # Save the results
 saveRDS(ancombc2_result, file = file.path(results_dir, "ancombc2_original_susceptibility_results.rds"))
