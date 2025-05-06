@@ -196,7 +196,7 @@ dataset_original <- dataset$clone()
 # Using year as the batch variable
 dataset_corrected <- correct_batch_effect(
   dataset = dataset, 
-  batch_var = "year",
+  batch_var = "batch",
   method = "simple_log",
   round_counts = TRUE
 )
