@@ -1,0 +1,43 @@
+=== NM ORIGINAL SUSCEPTIBILITY ANALYSIS RESULTS ===
+
+Analysis Date: 2025-05-06 
+Samples Analyzed: 74 
+Group Sizes:
+
+Acquisition_carrier         Non_carrier 
+                  5                  69 
+
+=== SIGNIFICANT TAXA ===
+
+
+======  SIGNIFICANT TAXA FOR ORIGINAL SUSCEPTIBILITY ANALYSIS  ======
+
+Comparison: (Intercept) 
+Number of significant taxa: 5 
+
+Comparison: carriage_groupNon_carrier 
+Number of significant taxa: 5 
+
+Comparison: cohort2 
+Number of significant taxa: 3 
+
+Comparison: cohort3 
+Number of significant taxa: 2 
+
+Comparison: selfsmoking1 
+Number of significant taxa: 1 
+
+=== PERMANOVA RESULTS ===
+
+Permutation test for adonis under reduced model
+Permutation: free
+Number of permutations: 999
+
+vegan::adonis2(formula = phyloseq::distance(ps_suscept_original, method = "bray") ~ phyloseq::sample_data(ps_suscept_original)$carriage_group, permutations = 999)
+         Df SumOfSqs      R2      F Pr(>F)   
+Model     1   0.6074 0.03131 2.3268  0.005 **
+Residual 72  18.7961 0.96869                 
+Total    73  19.4035 1.00000                 
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
