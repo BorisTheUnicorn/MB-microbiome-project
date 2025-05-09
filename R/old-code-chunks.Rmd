@@ -1,0 +1,62 @@
+---
+title: "old-code-chunks"
+output: pdf_document
+date: "2025-05-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+```
+
+## 5. Batch Effect Correction
+
+```{r batch-correction}
+# Clone the original dataset for comparison
+dataset_original <- dataset$clone()
+
+# Apply batch correction using the custom function
+# Using year as the batch variable
+dataset_corrected <- correct_batch_effect(
+  dataset = dataset, 
+  batch_var = "batch",
+  method = "simple_log",
+  round_counts = TRUE
+)
+
+# Calculate beta diversity for the corrected dataset
+dataset_corrected$cal_betadiv(unifrac = TRUE)
+
+# Create comparison plots with additional temporal variables
+comparison_plots <- compare_correction_plots(
+  dataset_original = dataset_original,
+  dataset_corrected = dataset_corrected,
+  factor_names = c("year", "batch", "time", "case_control", "collection_date", "season", "cohort"),
+  plot_titles = c(
+    "Batch Effect by Year",
+    "Batch Effect by Sequencing Batch",
+    "Samples by Time Point",
+    "Samples by NM Carriage Status",
+    "Samples by Collection Date",
+    "Samples by Season",
+    "Samples by Recruitment Cohort"
+  )
+)
+
+# Display the comparison plots
+comparison_plots$year
+comparison_plots$batch
+comparison_plots$time
+comparison_plots$case_control
+comparison_plots$collection_date
+comparison_plots$season
+comparison_plots$cohort
+
+# Update our dataset to use the corrected one
+dataset <- dataset_corrected
+```
