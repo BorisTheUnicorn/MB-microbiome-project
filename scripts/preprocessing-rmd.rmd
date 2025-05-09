@@ -30,26 +30,27 @@ library(microbiome)
 library(phyloseq)
 library(qiime2R)
 library(microeco)
-library(dplyr)
 library(tidyverse)
-library(magrittr)
 library(GUniFrac)
-library(ggplot2)
 library(patchwork)
 library(readxl)
 library(sva)
 
 # Source custom functions
-source("../R/preprocessing_functions.R")
+source("../R/preprocessing_functions.r")
 source("../R/visualization_functions.r")
 
 # Set data paths
 raw_data_dir <- "../data/raw/"
-processed_data_dir <- "../data/processed/"
+processed_to_ANCOM_data_dir <- "../data/processed_to_ANCOM/"
+processed_CLR_data_dir <- "../data/processed_CLR/"
 
 # Create processed directory if it doesn't exist
-if(!dir.exists(processed_data_dir)) {
-  dir.create(processed_data_dir, recursive = TRUE)
+if(!dir.exists(processed_to_ANCOM_data_dir)) {
+  dir.create(processed_to_ANCOM_data_dir, recursive = TRUE)
+}
+if(!dir.exists(processed_CLR_data_dir)) {
+  dir.create(processed_CLR_data_dir, recursive = TRUE)
 }
 ```
 
@@ -186,54 +187,7 @@ season_plot
 cohort_plot
 ```
 
-## 5. Batch Effect Correction
-
-```{r batch-correction}
-# Clone the original dataset for comparison
-dataset_original <- dataset$clone()
-
-# Apply batch correction using the custom function
-# Using year as the batch variable
-dataset_corrected <- correct_batch_effect(
-  dataset = dataset, 
-  batch_var = "batch",
-  method = "simple_log",
-  round_counts = TRUE
-)
-
-# Calculate beta diversity for the corrected dataset
-dataset_corrected$cal_betadiv(unifrac = TRUE)
-
-# Create comparison plots with additional temporal variables
-comparison_plots <- compare_correction_plots(
-  dataset_original = dataset_original,
-  dataset_corrected = dataset_corrected,
-  factor_names = c("year", "batch", "time", "case_control", "collection_date", "season", "cohort"),
-  plot_titles = c(
-    "Batch Effect by Year",
-    "Batch Effect by Sequencing Batch",
-    "Samples by Time Point",
-    "Samples by NM Carriage Status",
-    "Samples by Collection Date",
-    "Samples by Season",
-    "Samples by Recruitment Cohort"
-  )
-)
-
-# Display the comparison plots
-comparison_plots$year
-comparison_plots$batch
-comparison_plots$time
-comparison_plots$case_control
-comparison_plots$collection_date
-comparison_plots$season
-comparison_plots$cohort
-
-# Update our dataset to use the corrected one
-dataset <- dataset_corrected
-```
-
-## 6. Longitudinal Carriage Status Classification
+## 5. Longitudinal Carriage Status Classification
 
 ```{r carriage-classification}
 # Classify subjects based on NM carriage dynamics
@@ -266,20 +220,20 @@ table(dataset$sample_table$carriage_group, dataset$sample_table$time)
 table(dataset$sample_table$susceptibility_group, dataset$sample_table$time)
 ```
 
-## 7. Export Preprocessed Data
+## 6. Export Preprocessed ANCOM data
 
-```{r export-data}
+```{r export-data-ancom}
 # Save the dataset as RDS for later use
-saveRDS(dataset, file = file.path(processed_data_dir, "preprocessed_microbiome_dataset.rds"))
+saveRDS(dataset, file = file.path(processed_to_ANCOM_data_dir, "preprocessed_to_ANCOM_microbiome_dataset.rds"))
 
 # Convert to phyloseq for compatibility with other packages
 ps_object <- convert_to_phyloseq(dataset)
-saveRDS(ps_object, file = file.path(processed_data_dir, "preprocessed_phyloseq.rds"))
+saveRDS(ps_object, file = file.path(processed_to_ANCOM_data_dir, "preprocessed_to_ANCOM_phyloseq.rds"))
 
 # Export carriage classifications for reference
 write.csv(
   carriage_patterns,
-  file = file.path(processed_data_dir, "carriage_classifications.csv"),
+  file = file.path(processed_to_ANCOM_data_dir, "carriage_to_ANCOM_classifications.csv"),
   row.names = FALSE
 )
 
@@ -299,18 +253,18 @@ preprocessing_summary <- list(
   preprocessing_steps = c(
     "Imported QIIME2 data",
     "Filtered non-bacterial features and contaminants",
-    "Applied batch correction",
+    "create enhanced time variables",
     "Classified longitudinal carriage patterns",
     "Created expanded susceptibility grouping"
   )
 )
 
-saveRDS(preprocessing_summary, file = file.path(processed_data_dir, "preprocessing_summary.rds"))
+saveRDS(preprocessing_summary, file = file.path(processed_to_ANCOM_data_dir, "preprocessing_to_ANCOM_summary.rds"))
 ```
 
-## 8. Create Basic Visualizations of Processed Data
+## 7. Create Basic Visualizations of Processed Data to ANCOM
 
-```{r final-visualization}
+```{r final-visualization-ancom}
 # Make sure alpha and beta diversity are calculated first
 if(is.null(dataset$alpha_diversity)) {
   dataset$cal_alphadiv(measures = c("Shannon", "Simpson", "Observed"))
@@ -350,12 +304,135 @@ print(alpha_div_plot)
 print(longitudinal_pcoa)
 
 # Save the plots
-ggsave(file.path(processed_data_dir, "taxa_composition.png"), taxa_comp_plot, width = 12, height = 8)
-ggsave(file.path(processed_data_dir, "alpha_diversity.png"), alpha_div_plot, width = 12, height = 8)
-ggsave(file.path(processed_data_dir, "longitudinal_pcoa.png"), longitudinal_pcoa, width = 12, height = 8)
+ggsave(file.path(processed_to_ANCOM_data_dir, "taxa_composition_to_ANCOM.png"), taxa_comp_plot, width = 12, height = 8)
+ggsave(file.path(processed_to_ANCOM_data_dir, "alpha_diversity_to_ANCOM.png"), alpha_div_plot, width = 12, height = 8)
+ggsave(file.path(processed_to_ANCOM_data_dir, "longitudinal_pcoa_to_ANCOM.png"), longitudinal_pcoa, width = 12, height = 8)
 ```
 
-## 9. Session Info
+## 8. Performe CLR transformation on data
+
+```{r CLR}
+# — CLR Transformation for Compositional Microbiome Data —
+#Clone the dataset 
+dataset_clr <- dataset$clone()
+
+#Extract the OTU table
+abund <- dataset_clr$otu_table
+
+#Add a small pseudocount to zeros to avoid log(0)
+pseudocount <- 0.5
+abund[abund == 0] <- pseudocount
+
+#Compute the geometric mean of each sample (column)
+geom_mean <- apply(abund, 2, function(x) exp(mean(log(x))))  
+
+#Take log of abundances
+log_abund <- log(abund)
+
+#Subtract the log-geometric mean from each log-abundance
+clr_mat <- sweep(log_abund, 2, log(geom_mean), "-")
+
+#Update the dataset’s OTU table with CLR-transformed data
+dataset_clr$otu_table <- clr_mat
+
+#Inspect the first few CLR values
+head(dataset_clr$otu_table)
+
+```
+
+
+## 9. Export Preprocessed data after CLR
+
+```{r export-data-CLR}
+# Save the dataset as RDS for later use
+saveRDS(dataset_clr, file = file.path(processed_CLR_data_dir, "preprocessed_CLR_microbiome_dataset.rds"))
+
+# Convert to phyloseq for compatibility with other packages
+ps_object <- convert_to_phyloseq(dataset_clr)
+saveRDS(ps_object, file = file.path(processed_CLR_data_dir, "preprocessed_CLR_phyloseq.rds"))
+
+# Export carriage classifications for reference
+write.csv(
+  carriage_patterns,
+  file = file.path(processed_CLR_data_dir, "carriage_CLR_classifications.csv"),
+  row.names = FALSE
+)
+
+# Create and save a summary of the preprocessing
+preprocessing_summary <- list(
+  sample_counts = list(
+    total_samples = nrow(dataset_clr$sample_table),
+    samples_by_time = table(dataset_clr$sample_table$time),
+    samples_by_carriage = table(dataset_clr$sample_table$case_control),
+    samples_by_carriage_group = table(dataset_clr$sample_table$carriage_group),
+    samples_by_susceptibility = table(dataset_clr$sample_table$susceptibility_group)
+  ),
+  feature_counts = list(
+    total_features = nrow(dataset_clr$otu_table),
+    features_by_phylum = tax_summary
+  ),
+  preprocessing_steps = c(
+    "Imported QIIME2 data",
+    "Filtered non-bacterial features and contaminants",
+    "create enhanced time variables",
+    "Classified longitudinal carriage patterns",
+    "Created expanded susceptibility grouping",
+    "Performe CLR transformation on data"
+  )
+)
+
+saveRDS(preprocessing_summary, file = file.path(processed_CLR_data_dir, "preprocessing_CLR_summary.rds"))
+```
+
+## 10. Create Basic Visualizations of Processed Data to ANCOM
+
+```{r final-visualization-CLR}
+# Make sure alpha and beta diversity are calculated first
+if(is.null(dataset_clr$alpha_diversity)) {
+  dataset_clr$cal_alphadiv(measures = c("Shannon", "Simpson", "Observed"))
+}
+if(is.null(dataset_clr$beta_diversity)) {
+  dataset_clr$cal_betadiv(method = c("bray", "jaccard"))
+}
+
+# Taxonomic composition by carriage group
+taxa_comp_plot_CLR <- plot_taxa_composition(
+  dataset = dataset_clr,
+  tax_level = "Genus",
+  group_var = "carriage_group",
+  n_taxa = 15,
+  title = "Taxonomic Composition by Carriage Group after CLR"
+)
+
+# Alpha diversity by carriage group
+alpha_div_plot_CLR <- plot_alpha_diversity(
+  dataset = dataset_clr,
+  group_var = "carriage_group",
+  title = "Alpha Diversity by Carriage Group after CLR"
+)
+
+# Longitudinal PCoA for carriage groups
+longitudinal_pcoa_CLR <- plot_longitudinal_pcoa(
+  dataset = dataset_clr,
+  subject_var = "pid",
+  time_var = "time",
+  group_var = "carriage_group",
+  title = "Longitudinal Microbiome Trajectories by Carriage Group after CLR"
+)
+
+# Display the plots
+print(taxa_comp_plot_CLR)
+print(alpha_div_plot_CLR)
+print(longitudinal_pcoa_CLR)
+
+# Save the plots
+ggsave(file.path(processed_CLR_data_dir, "taxa_composition_CLR.png"), taxa_comp_plot_CLR, width = 12, height = 8)
+ggsave(file.path(processed_CLR_data_dir, "alpha_diversity_CLR.png"), alpha_div_plot_CLR, width = 12, height = 8)
+ggsave(file.path(processed_CLR_data_dir, "longitudinal_pcoa_CLR.png"), longitudinal_pcoa_CLR, width = 12, height = 8)
+```
+
+
+## 11. Session Info
 
 ```{r session-info}
 sessionInfo()
