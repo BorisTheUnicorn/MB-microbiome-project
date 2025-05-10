@@ -42,7 +42,7 @@ source("../R/differential_abundance.r")
 source("../R/visualization_functions.r")
 
 # Set data paths
-processed_data_dir <- "../data/processed/"
+processed_data_dir <- "../data/processed_to_ANCOM/"
 results_dir <- "../results/original_susceptibility/"
 
 # Create results directory if it doesn't exist
@@ -55,10 +55,10 @@ if(!dir.exists(results_dir)) {
 
 ```{r load-data}
 # Load the preprocessed phyloseq object
-ps <- readRDS(file.path(processed_data_dir, "preprocessed_phyloseq.rds"))
+ps <- readRDS(file.path(processed_data_dir, "preprocessed_to_ANCOM_phyloseq.rds"))
 
 # Load the microbiome dataset for additional functionality if needed
-dataset <- readRDS(file.path(processed_data_dir, "preprocessed_microbiome_dataset.rds"))
+dataset <- readRDS(file.path(processed_data_dir, "preprocessed_to_ANCOM_microbiome_dataset.rds"))
 
 # Check that our carriage classifications are present
 print("Carriage group distribution:")
