@@ -15,49 +15,90 @@
 # library(tidyr)
 # library(ggpubr)
 
-#' Create Beta Diversity Ordination
+#' Create Beta Diversity Ordination Plot with Enhanced Aesthetics
 #'
-#' Creates beta diversity ordination plot using microeco's built-in functions
+#' Creates a beta diversity ordination plot using microeco's built-in functions,
+#' allowing separate variables for color and shape, and control over point/ellipse aesthetics.
 #'
-#' @param dataset A microtable object
-#' @param factor_name Factor to color/group by in the plot
-#' @param distance_metric Beta diversity measure (default: "bray")
-#' @param method Ordination method (default: "PCoA")
-#' @param plot_type Plot type (default: c("point", "ellipse"))
-#' @param title Plot title (optional)
-#' @param color_values Color values for plotting (optional)
-#' @return A ggplot object with the ordination plot
+#' @param dataset A microtable object.
+#' @param plot_color_var Factor name (from sample_table) to use for coloring points/ellipses.
+#' @param plot_shape_var Factor name (from sample_table) to use for point shapes (optional).
+#'                         If NULL, shape may default to plot_color_var or a single shape.
+#' @param distance_metric Beta diversity measure (default: "bray").
+#' @param method Ordination method (default: "PCoA").
+#' @param plot_type Plot type (default: c("point", "ellipse")). Can be a vector.
+#' @param title Plot title (optional). If NULL, a title will be auto-generated.
+#' @param point_size Size of the points in the plot (default: 3). This is passed to microeco's point_size.
+#' @param ellipse_alpha Alpha (transparency) for ellipses (default: 0.1). This is passed to microeco's ellipse_chull_alpha.
+#' @param color_values Custom color palette for plot_color_var (optional).
+#' @param shape_values Custom shape palette for plot_shape_var (optional).
+#' @return A ggplot object with the ordination plot.
 #' @export
-plot_pcoa <- function(dataset, 
-                      factor_name, 
-                      distance_metric = "bray", 
+plot_pcoa <- function(dataset,
+                      plot_color_var,
+                      plot_shape_var = NULL,
+                      distance_metric = "bray",
                       method = "PCoA",
                       plot_type = c("point", "ellipse"),
                       title = NULL,
-                      color_values = NULL) {
+                      point_size = 3,        # User-facing parameter for the wrapper
+                      ellipse_alpha = 0.1,   # User-facing parameter for the wrapper
+                      color_values = NULL,
+                      shape_values = NULL) {
   
-  # Create the trans_beta object
-  beta_obj <- trans_beta$new(dataset = dataset, 
-                             measure = distance_metric, 
-                             group = factor_name)
+  # Ensure the microeco package is available
+  # if (!requireNamespace("microeco", quietly = TRUE)) {
+  #   stop("Please install the 'microeco' package to use this function.")
+  # }
+  # if (!requireNamespace("ggplot2", quietly = TRUE)) {
+  #   stop("Please install the 'ggplot2' package.")
+  # }
   
-  # Run the ordination
-  beta_obj$cal_ordination(method = method)
-  
-  # Generate the plot title if not provided
-  if(is.null(title)) {
-    title <- paste("Beta Diversity by", factor_name)
+  # Calculate beta diversity if not already present for the chosen metric
+  if (is.null(dataset$beta_diversity[[distance_metric]])) {
+    dataset$cal_betadiv(method = distance_metric)
   }
   
-  # Create the plot
-  beta_plot <- beta_obj$plot_ordination(
-    plot_type = plot_type,
-    plot_color = factor_name,
-    plot_shape = factor_name
-  ) + 
-    labs(title = title)
+  beta_obj <- microeco::trans_beta$new(dataset = dataset,
+                                       measure = distance_metric,
+                                       group = plot_color_var) # Group primarily for ellipses
   
-  # Return the plot
+  beta_obj$cal_ordination(method = method)
+  
+  if(is.null(title)) {
+    title_parts <- paste0("Beta Diversity (", toupper(method), " on ", distance_metric, ") by ", plot_color_var)
+    if (!is.null(plot_shape_var) && plot_color_var != plot_shape_var) {
+      title_parts <- paste0(title_parts, " and Shape by ", plot_shape_var)
+    }
+    title <- title_parts
+  }
+  
+  current_plot_shape <- if (is.null(plot_shape_var)) plot_color_var else plot_shape_var
+  
+  # Create the plot using microeco's expected argument names
+  beta_plot <- beta_obj$plot_ordination(
+    plot_color = plot_color_var,
+    plot_shape = current_plot_shape,
+    plot_type = plot_type,
+    point_size = point_size,             # Corrected: Pass to microeco's 'point_size'
+    ellipse_chull_alpha = ellipse_alpha  # Corrected: Pass to microeco's 'ellipse_chull_alpha'
+  ) +
+    labs(title = title) +
+    theme_bw()
+  
+  # Apply custom color palette if provided
+  if (!is.null(color_values)) {
+    beta_plot <- beta_plot + ggplot2::scale_color_manual(values = color_values)
+    if (any(c("ellipse", "chull") %in% plot_type)) {
+      beta_plot <- beta_plot + ggplot2::scale_fill_manual(values = color_values)
+    }
+  }
+  
+  # Apply custom shape palette if provided and shape is mapped to a variable
+  if (!is.null(shape_values) && !is.null(plot_shape_var)) {
+    beta_plot <- beta_plot + ggplot2::scale_shape_manual(values = shape_values)
+  }
+  
   return(beta_plot)
 }
 
@@ -152,26 +193,41 @@ plot_alpha_diversity <- function(dataset, group_var,
 
 #' Create a Stacked Bar Plot of Taxa Composition
 #'
-#' Creates a stacked bar plot showing the relative abundance of the top taxa
+#' Creates a stacked bar plot showing the relative abundance of the top taxa.
+#' Can handle single or multiple faceting variables.
 #'
-#' @param dataset A microtable object
-#' @param tax_level Taxonomic level to aggregate to (default: "Genus")
-#' @param group_var The grouping variable name
-#' @param n_taxa Number of top taxa to show individually (default: 15)
-#' @param title Plot title (optional)
-#' @return A ggplot object with compositional bar plot
+#' @param dataset A microtable object.
+#' @param tax_level Taxonomic level to aggregate to (default: "Genus").
+#' @param facet_vars A character string for a single faceting variable OR 
+#'                   a character vector for multiple faceting variables (e.g., c("carriage_group", "batch")).
+#'                   These should be column names in dataset$sample_table.
+#' @param n_taxa Number of top taxa to show individually (default: 15).
+#' @param title Plot title (optional).
+#' @return A ggplot object with compositional bar plot.
 #' @export
-plot_taxa_composition <- function(dataset, tax_level = "Genus", group_var,
+plot_taxa_composition <- function(dataset, tax_level = "Genus", facet_vars = NULL,
                                   n_taxa = 15, title = NULL) {
   # Create a clone to avoid modifying original dataset
   dataset_agg <- dataset$clone()
   
+  # Ensure faceting variables are factors for ordered plotting if desired by user beforehand
+  if (!is.null(facet_vars)) {
+    for (var in facet_vars) {
+      if (var %in% colnames(dataset_agg$sample_table) && !is.factor(dataset_agg$sample_table[[var]])) {
+        # message(paste0("Converting '", var, "' to factor for faceting.")) # Optional message
+        dataset_agg$sample_table[[var]] <- as.factor(dataset_agg$sample_table[[var]])
+      }
+    }
+  }
+  
   # Merge taxa to the desired taxonomic level if needed
-  if(tax_level != "OTU") {
+  if (tax_level != "OTU") {
     dataset_agg$merge_taxa(taxa = tax_level)
   }
   
   # Create a trans_abund object
+  # The trans_abund$new() function itself does not take grouping/faceting variables for the plot
+  # It prepares the abundance data.
   trans_abund_obj <- trans_abund$new(
     dataset = dataset_agg, 
     taxrank = tax_level, 
@@ -179,10 +235,12 @@ plot_taxa_composition <- function(dataset, tax_level = "Genus", group_var,
   )
   
   # Generate the barplot
+  # The `facet` argument in `plot_bar` will receive the character vector directly
   taxa_plot <- trans_abund_obj$plot_bar(
-    facet = group_var,
+    facet = facet_vars, # Pass the single string or character vector here
     others_color = "grey70", 
-    xtext_keep = FALSE
+    xtext_keep = FALSE 
+    # Consider adding other plot_bar arguments if needed, e.g., for ordering within facets if microeco supports it
   )
   
   # Add title if provided
