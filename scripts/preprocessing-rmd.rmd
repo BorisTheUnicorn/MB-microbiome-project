@@ -36,6 +36,8 @@ library(patchwork)
 library(readxl)
 library(sva)
 library(magrittr)
+library(dplyr)
+library(ggplot2)
 
 # Source custom functions
 source("../R/preprocessing_functions.r")
@@ -75,14 +77,14 @@ time_summary <- dataset$sample_table %>%
   summarise(count = n(), .groups = 'drop') %>%
   arrange(collection_date)
 
-print("Summary of time variables:")
+print("Summary of time variables (full dataset):")
 print(time_summary)
 
-# Visualize sample distribution across time
+# Visualize sample distribution across time (full dataset)
 time_dist_plot <- ggplot(dataset$sample_table, 
                          aes(x = collection_date, fill = season)) +
   geom_bar() +
-  labs(title = "Sample Distribution by Collection Date",
+  labs(title = "Sample Distribution by Collection Date (Full Dataset)",
        x = "Collection Date", 
        y = "Number of Samples") +
   theme_minimal() +
@@ -90,7 +92,8 @@ time_dist_plot <- ggplot(dataset$sample_table,
 
 print(time_dist_plot)
 
-# Basic dataset summary
+# Basic dataset summary (full dataset)
+print("Summary of the full dataset:")
 print(dataset)
 ```
 
@@ -120,98 +123,135 @@ tax_summary <- dataset$tax_table %>%
 head(tax_summary, 10)
 ```
 
-## 4. Calculate Beta Diversity and Visualize Initial Distribution
+## 4. Longitudinal Carriage Status Classification
+
+```{r carriage-classification}
+# Classify subjects based on NM carriage dynamics
+# This function calculates 'carriage_group' and 'susceptibility_group' per participant.
+participant_carriage_summary <- classify_longitudinal_carriage(dataset)
+
+# Display the distribution of the new carriage group categories
+print("Distribution of Carriage Groups (per participant):")
+print(table(participant_carriage_summary$carriage_group))
+
+# Display the distribution of the new susceptibility group
+print("Distribution of Susceptibility Groups (per participant; 0 = Never Case, 1 = Ever Case):")
+print(table(participant_carriage_summary$susceptibility_group))
+
+# Update the dataset's sample_table with these new classifications
+dataset <- add_carriage_columns_to_dataset(
+  dataset = dataset,
+  carriage_classification_df = participant_carriage_summary
+)
+
+# Verify the new columns in the dataset's sample_table
+print("Cross-tabulation of Carriage Group by Time Point (in dataset$sample_table):")
+print(table(dataset$sample_table$carriage_group, dataset$sample_table$time, useNA = "ifany"))
+
+print("Cross-tabulation of Susceptibility Group by Time Point (in dataset$sample_table):")
+print(table(dataset$sample_table$susceptibility_group, dataset$sample_table$time, useNA = "ifany"))
+
+# Final quick check on rownames for peace of mind
+# This check should pass if add_carriage_columns_to_dataset worked as intended.
+if (nrow(dataset$sample_table) > 0 && 
+    !all(rownames(dataset$sample_table) == as.character(dataset$sample_table[[1]]))) {
+  warning("Final check: Rownames of dataset$sample_table might not align with SampleIDs in the first column.")
+} else if (nrow(dataset$sample_table) > 0) {
+  # message("Final rowname check passed.")
+}
+
+```
+
+## 5. Calculate Beta Diversity and Visualize Initial Distribution
 
 ```{r beta-diversity}
 # Calculate beta diversity
 dataset$cal_betadiv(unifrac = TRUE)
 
+# Create dataset without batch 4
+dataset_no_b4 <- remove_batch4(dataset)
+
 # Create ordination plots for potential batch effects and biological factors
-# Using the simplified plot_pcoa function
-year_plot <- plot_pcoa(
-  dataset = dataset,
-  factor_name = "year", 
+
+# Year
+plot_pcoa(
+  dataset = dataset, 
+  plot_color_var = "year", 
+  plot_shape_var = "batch", 
   title = "Samples by Year"
 )
 
-batch_plot <- plot_pcoa(
+# Batch
+plot_pcoa(
   dataset = dataset,
-  factor_name = "batch", 
+  plot_color_var = "batch",
+  plot_shape_var = "cohort", 
   title = "Samples by Sequencing Batch"
 )
 
-time_plot <- plot_pcoa(
-  dataset = dataset,
-  factor_name = "time", 
+# Time (0, 2, 4)
+plot_pcoa(
+  dataset = dataset_no_b4,
+  plot_color_var = "time",
+  plot_shape_var = "cohort",
+  facet_var = "batch",
   title = "Samples by Time Point"
 )
 
-carriage_plot <- plot_pcoa(
-  dataset = dataset,
-  factor_name = "case_control", 
+# Carriage
+plot_pcoa(
+  dataset = dataset_no_b4,
+  plot_color_var = "case_control",
+  plot_shape_var = "cohort",
+  facet_var = "batch",
   title = "Samples by NM Carriage Status"
 )
 
-# Additional temporal and cohort PCoA plots
-collection_date_plot <- plot_pcoa(
-  dataset = dataset,
-  factor_name = "collection_date", 
+# Collection Date
+plot_pcoa(
+  dataset = dataset_no_b4,
+  plot_color_var = "collection_date",
+  plot_shape_var = "time",
+  facet_var = "batch",
   title = "Samples by Collection Date"
 )
 
-season_plot <- plot_pcoa(
-  dataset = dataset,
-  factor_name = "season", 
+# Season
+plot_pcoa(
+  dataset = dataset_no_b4,
+  plot_color_var = "season",
+  plot_shape_var = "cohort",
+  facet_var = "batch",
   title = "Samples by Season"
 )
 
-cohort_plot <- plot_pcoa(
-  dataset = dataset,
-  factor_name = "cohort", 
+# Cohort
+plot_pcoa(
+  dataset = dataset_no_b4,
+  plot_color_var = "cohort",
+  plot_shape_var = "time",
+  facet_var = "batch",
   title = "Samples by Cohort"
 )
 
-# Display the plots
-year_plot
-batch_plot
-time_plot
-carriage_plot
-collection_date_plot
-season_plot
-cohort_plot
-```
-
-## 5. Longitudinal Carriage Status Classification
-
-```{r carriage-classification}
-# Classify subjects based on NM carriage dynamics
-carriage_patterns <- classify_carriage_status(dataset)
-
-# Display the distribution of carriage status categories
-table(carriage_patterns$carriage_status)
-table(carriage_patterns$carriage_group)
-
-# Create expanded susceptibility grouping
-expanded_patterns <- create_susceptibility_groups(carriage_patterns)
-
-# Get list of PIDs showing acquisition
-acquisition_pids <- expanded_patterns %>%
-  filter(shows_acquisition == TRUE) %>%
-  pull(pid)
-
-# Print information about the expanded group
-cat("Number of subjects in expanded acquisition group:", length(acquisition_pids), "\n")
-
-# Update the dataset with carriage classifications
-dataset <- update_dataset_with_carriage_status(
-  dataset = dataset,
-  carriage_patterns = carriage_patterns,
-  expanded_patterns = expanded_patterns
+# Ever vs. Never Carriers
+plot_pcoa(
+  dataset = dataset_no_b4,
+  plot_color_var = "susceptibility_group",
+  plot_shape_var = "cohort",
+  facet_var = "batch",
+  title = "Samples by Susceptibility Group"
 )
 
-# Check the distribution of the new groupings
-table(dataset$sample_table$carriage_group, dataset$sample_table$time)
-table(dataset$sample_table$susceptibility_group, dataset$sample_table$time)
+# Carriage groups
+plot_pcoa(
+  dataset = dataset_no_b4,
+  plot_color_var = "carriage_group",
+  plot_shape_var = "cohort",
+  facet_var = "batch",
+  title = "Samples by Carriage Group"
+)
+
 ```
 
 ## 6. Export Preprocessed ANCOM data
@@ -272,7 +312,7 @@ taxa_comp_plot <- plot_taxa_composition(
   dataset = dataset,
   tax_level = "Genus",
   facet_vars = c("batch"), # Pass as a character vector
-  n_taxa = 15,
+  n_taxa = 20,
   title = "Taxonomic Composition by Carriage Group and Batch"
 )
 

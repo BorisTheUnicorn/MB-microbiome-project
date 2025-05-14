@@ -15,92 +15,223 @@
 # library(tidyr)
 # library(ggpubr)
 
-#' Create Beta Diversity Ordination Plot with Enhanced Aesthetics
+#' Create Beta Diversity Ordination Plot with Enhanced Aesthetics and Optional Faceting
 #'
-#' Creates a beta diversity ordination plot using microeco's built-in functions,
-#' allowing separate variables for color and shape, and control over point/ellipse aesthetics.
+#' Creates a beta diversity ordination plot. Uses microeco's built-in functions for non-faceted plots,
+#' or ggplot2 directly for faceted plots. Allows separate variables for color and shape.
 #'
 #' @param dataset A microtable object.
 #' @param plot_color_var Factor name (from sample_table) to use for coloring points/ellipses.
 #' @param plot_shape_var Factor name (from sample_table) to use for point shapes (optional).
-#'                         If NULL, shape may default to plot_color_var or a single shape.
+#' @param facet_var Factor name (from sample_table) to use for faceting the plot (optional).
 #' @param distance_metric Beta diversity measure (default: "bray").
 #' @param method Ordination method (default: "PCoA").
 #' @param plot_type Plot type (default: c("point", "ellipse")). Can be a vector.
 #' @param title Plot title (optional). If NULL, a title will be auto-generated.
-#' @param point_size Size of the points in the plot (default: 3). This is passed to microeco's point_size.
-#' @param ellipse_alpha Alpha (transparency) for ellipses (default: 0.1). This is passed to microeco's ellipse_chull_alpha.
+#' @param point_size Size of the points in the plot (default: 3).
+#' @param ellipse_alpha Alpha (transparency) for ellipses (default: 0.1).
 #' @param color_values Custom color palette for plot_color_var (optional).
 #' @param shape_values Custom shape palette for plot_shape_var (optional).
+#' @param facet_scales Argument passed to facet_wrap's scales (e.g., "free", "fixed", "free_x", "free_y"). Default "free".
+#' @param facet_nrow Number of rows for facet_wrap. Default NULL (ggplot2 decides).
+#' @param facet_ncol Number of columns for facet_wrap. Default NULL (ggplot2 decides).
+#' @param axes_choice Numeric vector of length 2 indicating which ordination axes to plot (default: c(1, 2)).
 #' @return A ggplot object with the ordination plot.
 #' @export
 plot_pcoa <- function(dataset,
                       plot_color_var,
                       plot_shape_var = NULL,
+                      facet_var = NULL,
                       distance_metric = "bray",
                       method = "PCoA",
                       plot_type = c("point", "ellipse"),
                       title = NULL,
-                      point_size = 3,        # User-facing parameter for the wrapper
-                      ellipse_alpha = 0.1,   # User-facing parameter for the wrapper
+                      point_size = 3,
+                      ellipse_alpha = 0.1,
                       color_values = NULL,
-                      shape_values = NULL) {
+                      shape_values = NULL,
+                      facet_scales = "free",
+                      facet_nrow = NULL,
+                      facet_ncol = NULL,
+                      axes_choice = c(1, 2)) { # New parameter for choosing axes
   
-  # Ensure the microeco package is available
-  # if (!requireNamespace("microeco", quietly = TRUE)) {
-  #   stop("Please install the 'microeco' package to use this function.")
-  # }
-  # if (!requireNamespace("ggplot2", quietly = TRUE)) {
-  #   stop("Please install the 'ggplot2' package.")
-  # }
+  if (!requireNamespace("microeco", quietly = TRUE)) stop("Please install the 'microeco' package.")
+  if (!requireNamespace("ggplot2", quietly = TRUE)) stop("Please install the 'ggplot2' package.")
+  if (!requireNamespace("dplyr", quietly = TRUE)) stop("Please install the 'dplyr' package.")
   
-  # Calculate beta diversity if not already present for the chosen metric
+  # Ensure chosen axes are valid
+  if(length(axes_choice) != 2 || !is.numeric(axes_choice) || any(axes_choice < 1)){
+    stop("axes_choice must be a numeric vector of two positive integers, e.g., c(1, 2).")
+  }
+  
+  # Calculate beta diversity if not already present
+  # microeco stores measures in dataset$beta_diversity as a list
   if (is.null(dataset$beta_diversity[[distance_metric]])) {
+    message(paste0("Calculating ", distance_metric, " beta diversity..."))
     dataset$cal_betadiv(method = distance_metric)
   }
   
   beta_obj <- microeco::trans_beta$new(dataset = dataset,
                                        measure = distance_metric,
-                                       group = plot_color_var) # Group primarily for ellipses
+                                       group = plot_color_var) # Group for microeco's default ellipse logic
   
-  beta_obj$cal_ordination(method = method)
+  beta_obj$cal_ordination(method = method, ncomp = max(axes_choice)) # Ensure enough components are calculated
   
+  # Auto-generate title if not provided
+  ordination_method_name <- toupper(method)
   if(is.null(title)) {
-    title_parts <- paste0("Beta Diversity (", toupper(method), " on ", distance_metric, ") by ", plot_color_var)
+    title_parts <- paste0(ordination_method_name, " on ", distance_metric, " by ", plot_color_var)
     if (!is.null(plot_shape_var) && plot_color_var != plot_shape_var) {
-      title_parts <- paste0(title_parts, " and Shape by ", plot_shape_var)
+      title_parts <- paste0(title_parts, " (Shape: ", plot_shape_var, ")")
+    }
+    if (!is.null(facet_var)) {
+      title_parts <- paste0(title_parts, ", Faceted by ", facet_var)
     }
     title <- title_parts
   }
   
-  current_plot_shape <- if (is.null(plot_shape_var)) plot_color_var else plot_shape_var
-  
-  # Create the plot using microeco's expected argument names
-  beta_plot <- beta_obj$plot_ordination(
-    plot_color = plot_color_var,
-    plot_shape = current_plot_shape,
-    plot_type = plot_type,
-    point_size = point_size,             # Corrected: Pass to microeco's 'point_size'
-    ellipse_chull_alpha = ellipse_alpha  # Corrected: Pass to microeco's 'ellipse_chull_alpha'
-  ) +
-    labs(title = title) +
-    theme_bw()
-  
-  # Apply custom color palette if provided
-  if (!is.null(color_values)) {
-    beta_plot <- beta_plot + ggplot2::scale_color_manual(values = color_values)
-    if (any(c("ellipse", "chull") %in% plot_type)) {
-      beta_plot <- beta_plot + ggplot2::scale_fill_manual(values = color_values)
+  # If not faceting, use microeco's plotting (generally simpler for basic cases)
+  if (is.null(facet_var)) {
+    current_plot_shape <- if (is.null(plot_shape_var)) plot_color_var else plot_shape_var
+    
+    beta_plot <- beta_obj$plot_ordination(
+      plot_color = plot_color_var,
+      plot_shape = current_plot_shape,
+      plot_type = plot_type,
+      point_size = point_size,
+      ellipse_chull_alpha = ellipse_alpha,
+      choices = axes_choice # Pass axes choice to microeco
+    ) +
+      labs(title = title) +
+      theme_bw()
+    
+    if (!is.null(color_values)) {
+      beta_plot <- beta_plot + ggplot2::scale_color_manual(values = color_values)
+      if (any(c("ellipse", "chull") %in% plot_type)) {
+        beta_plot <- beta_plot + ggplot2::scale_fill_manual(values = color_values)
+      }
+    }
+    if (!is.null(shape_values) && !is.null(plot_shape_var)) {
+      beta_plot <- beta_plot + ggplot2::scale_shape_manual(values = shape_values)
+    }
+    
+  } else { # If faceting, construct plot with ggplot2 directly
+    
+    ordination_scores_all <- as.data.frame(beta_obj$res_ordination$scores)
+    if(ncol(ordination_scores_all) < max(axes_choice)){
+      stop(paste0("Requested axes (", paste(axes_choice, collapse=", "), ") exceed available ordination components (", ncol(ordination_scores_all), "). Rerun cal_ordination with higher ncomp."))
+    }
+    ordination_scores <- ordination_scores_all[, axes_choice, drop = FALSE]
+    colnames(ordination_scores) <- c("AxisX", "AxisY") # Generic names for plotting
+    
+    ordination_scores$SampleID <- rownames(ordination_scores_all) # Use original rownames as SampleID
+    
+    sample_info <- dataset$sample_table
+    # Ensure SampleID column exists in sample_info for robust merging
+    if (!"SampleID" %in% colnames(sample_info)) {
+      if (all(rownames(sample_info) %in% ordination_scores$SampleID)) {
+        sample_info$SampleID <- rownames(sample_info)
+      } else if (all(dataset$sample_table[[1]] %in% ordination_scores$SampleID)) {
+        sample_info$SampleID <- as.character(dataset$sample_table[[1]])
+        if(any(duplicated(sample_info$SampleID))) stop("First column of sample_table used as SampleID contains duplicates.")
+        message("Using the first column of sample_table as SampleID for merging.")
+      } else {
+        stop("Cannot find a reliable 'SampleID' column in sample_table, and rownames do not match. Please ensure a 'SampleID' column that matches ordination score rownames exists.")
+      }
+    }
+    
+    # Convert SampleID columns to character for robust join
+    ordination_scores$SampleID <- as.character(ordination_scores$SampleID)
+    sample_info$SampleID <- as.character(sample_info$SampleID)
+    
+    plot_data <- dplyr::left_join(ordination_scores, sample_info, by = "SampleID")
+    
+    if(nrow(plot_data) != nrow(ordination_scores)){
+      warning("Not all samples in ordination scores were matched in metadata. Check SampleID consistency.")
+    }
+    # Check for NAs in critical plotting variables after merge
+    critical_vars_for_check <- c(plot_color_var, plot_shape_var, facet_var)
+    critical_vars_for_check <- critical_vars_for_check[!sapply(critical_vars_for_check, is.null)]
+    for(v in critical_vars_for_check){
+      if(any(is.na(plot_data[[v]]))) {
+        warning(paste("NAs introduced or present in plotting variable '", v, "' after metadata join. This can cause issues with plotting or faceting.", sep=""))
+      }
+    }
+    
+    
+    # Extract explained variance for axis labels
+    eig_values <- NULL
+    # Try to get eigenvalues from standard PCoA (ape::pcoa via microeco)
+    if(!is.null(beta_obj$res_ordination$values) && !is.null(beta_obj$res_ordination$values$Eigenvalues)){
+      eig_values <- beta_obj$res_ordination$values$Eigenvalues
+    } else if (!is.null(beta_obj$res_ordination$eig)) { # For vegan ordinations (rda, cca)
+      eig_values <- beta_obj$res_ordination$eig
+    } else if (!is.null(beta_obj$res_ordination$sdev)) { # For PCA (prcomp via microeco)
+      eig_values <- beta_obj$res_ordination$sdev^2
+    }
+    
+    
+    axis_label_x <- colnames(ordination_scores_all)[axes_choice[1]]
+    axis_label_y <- colnames(ordination_scores_all)[axes_choice[2]]
+    
+    if(!is.null(eig_values) && length(eig_values) >= max(axes_choice)){
+      explained_variance <- eig_values / sum(eig_values) * 100
+      axis_label_x <- paste0(colnames(ordination_scores_all)[axes_choice[1]], " [", round(explained_variance[axes_choice[1]], 1), "%]")
+      axis_label_y <- paste0(colnames(ordination_scores_all)[axes_choice[2]], " [", round(explained_variance[axes_choice[2]], 1), "%]")
+    }
+    
+    # Define shape aesthetic: if plot_shape_var is NULL, don't map shape to a variable explicitly
+    # geom_point will use a default shape.
+    shape_aes_string <- if (!is.null(plot_shape_var)) plot_shape_var else shQuote("default_shape_val")
+    if(is.null(plot_shape_var)) plot_data$default_shape_val <- "Sample" # dummy column for single shape
+    
+    beta_plot <- ggplot2::ggplot(plot_data, ggplot2::aes(x = AxisX, y = AxisY)) +
+      ggplot2::geom_point(ggplot2::aes_string(color = plot_color_var, shape = shape_aes_string), size = point_size, alpha = 0.7) +
+      ggplot2::xlab(axis_label_x) +
+      ggplot2::ylab(axis_label_y) +
+      ggplot2::labs(title = title) +
+      theme_bw() +
+      ggplot2::facet_wrap(stats::as.formula(paste("~", facet_var)), scales = facet_scales, nrow = facet_nrow, ncol = facet_ncol)
+    
+    if (any(c("ellipse") %in% plot_type) && !is.null(plot_color_var)) {
+      beta_plot <- beta_plot + ggplot2::stat_ellipse(ggplot2::aes_string(fill = plot_color_var, color = plot_color_var), 
+                                                     geom = "polygon", alpha = ellipse_alpha, type = "t")
+    }
+    if (any(c("chull") %in% plot_type) && !is.null(plot_color_var)) {
+      # Ensure columns for chull are correctly referenced, matching 'AxisX' and 'AxisY'
+      chull_data <- plot_data %>%
+        dplyr::group_by(!!dplyr::sym(facet_var), !!dplyr::sym(plot_color_var)) %>%
+        dplyr::filter(n() >= 3) %>% # chull needs at least 3 points
+        dplyr::slice(chull(AxisX, AxisY)) %>% # Use generic names here
+        dplyr::ungroup()
+      if(nrow(chull_data) > 0){
+        beta_plot <- beta_plot + ggplot2::geom_polygon(data = chull_data, 
+                                                       ggplot2::aes_string(fill = plot_color_var, color = plot_color_var), 
+                                                       alpha = ellipse_alpha, show.legend = FALSE)
+      } else {
+        message("Not enough points to draw convex hulls for some groups after faceting.")
+      }
+    }
+    
+    if (!is.null(color_values)) {
+      beta_plot <- beta_plot + ggplot2::scale_color_manual(values = color_values)
+      if (any(c("ellipse", "chull") %in% plot_type)) {
+        beta_plot <- beta_plot + ggplot2::scale_fill_manual(values = color_values)
+      }
+    }
+    # Only add scale_shape_manual if plot_shape_var was actually provided and used for mapping
+    if (!is.null(shape_values) && !is.null(plot_shape_var)) {
+      beta_plot <- beta_plot + ggplot2::scale_shape_manual(values = shape_values)
+    } else if (is.null(plot_shape_var) && !is.null(shape_values) && length(shape_values)==1){
+      # If no shape var, but shape_values is given (e.g. a single shape number), apply it
+      beta_plot <- beta_plot + ggplot2::scale_shape_manual(values = c("Sample" = shape_values[1])) + guides(shape = "none")
+    } else if (is.null(plot_shape_var)){
+      beta_plot <- beta_plot + guides(shape = "none") # Hide dummy shape legend
     }
   }
-  
-  # Apply custom shape palette if provided and shape is mapped to a variable
-  if (!is.null(shape_values) && !is.null(plot_shape_var)) {
-    beta_plot <- beta_plot + ggplot2::scale_shape_manual(values = shape_values)
-  }
-  
   return(beta_plot)
 }
+
 
 #' Compare Pre and Post Correction Plots
 #'

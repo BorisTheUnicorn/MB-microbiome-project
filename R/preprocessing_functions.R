@@ -473,3 +473,280 @@ convert_to_phyloseq <- function(dataset) {
   
   return(ps)
 }
+
+#' Classify Longitudinal NM Carriage Status and Susceptibility
+#'
+#' Classifies subjects based on Neisseria meningitidis (NM) carriage dynamics
+#' across three time points (time_0, time_2, time_4) from the 'case_control'
+#' column in the dataset. It also determines a binary susceptibility group
+#' (1 if ever a 'case', 0 otherwise).
+#'
+#' @param dataset A microtable object containing a sample_table with 'pid',
+#'   'time', and 'case_control' columns.
+#' @return A data frame with columns: 'pid', 'carriage_group',
+#'   'susceptibility_group', 'time_0', 'time_2', 'time_4' (carriage status
+#'   at each timepoint), and 'available_timepoints'.
+#' @export
+#' @examples
+#' # Assuming 'my_microbiome_dataset' is a microtable object:
+#' # carriage_df <- classify_longitudinal_carriage(my_microbiome_dataset)
+classify_longitudinal_carriage <- function(dataset) {
+  if (!"sample_table" %in% names(dataset)) {
+    stop("Dataset must have a sample_table component.")
+  }
+  if (!all(c("pid", "time", "case_control") %in% names(dataset$sample_table))) {
+    stop("dataset$sample_table must contain 'pid', 'time', and 'case_control' columns.")
+  }
+  
+  # Create a wide-format table showing carriage status at each time point
+  carriage_wide_df <- dataset$sample_table %>%
+    dplyr::select(pid, time, case_control) %>%
+    dplyr::mutate(time = as.character(time)) %>% # Ensure time is character for correct pivoting
+    tidyr::pivot_wider(
+      id_cols = pid,
+      names_from = time,
+      values_from = case_control,
+      names_prefix = "time_"
+    )
+  
+  # Ensure all expected time columns exist, fill with NA if not present for some pids
+  # This handles cases where a pid might not have an entry for e.g. time_4 at all
+  expected_time_cols <- c("time_0", "time_2", "time_4")
+  for (col_name in expected_time_cols) {
+    if (!col_name %in% names(carriage_wide_df)) {
+      carriage_wide_df[[col_name]] <- NA_character_
+    }
+  }
+  
+  # Define carriage patterns
+  classified_df <- carriage_wide_df %>%
+    dplyr::mutate(
+      available_timepoints = (!is.na(time_0)) + (!is.na(time_2)) + (!is.na(time_4)),
+      
+      # Susceptibility Group Logic (1 if ever 'case', 0 otherwise)
+      susceptibility_group = dplyr::case_when(
+        (!is.na(time_0) & time_0 == "case") |
+          (!is.na(time_2) & time_2 == "case") |
+          (!is.na(time_4) & time_4 == "case") ~ 1,
+        TRUE ~ 0
+      ),
+      
+      # Carriage Group Logic
+      carriage_group = dplyr::case_when(
+        available_timepoints <= 1 ~ "Undetermined",
+        
+        # Persistent Carrier: >=2 available timepoints, and all available are "case"
+        available_timepoints >= 2 &
+          (is.na(time_0) | time_0 == "case") &
+          (is.na(time_2) | time_2 == "case") &
+          (is.na(time_4) | time_4 == "case") &
+          ( (time_0 == "case" & !is.na(time_0)) | # Ensure at least one actual 'case' observation
+              (time_2 == "case" & !is.na(time_2)) |
+              (time_4 == "case" & !is.na(time_4)) ) ~ "Persistent_carrier",
+        
+        # Non-Carrier: >=2 available timepoints, and all available are "control"
+        available_timepoints >= 2 &
+          (is.na(time_0) | time_0 == "control") &
+          (is.na(time_2) | time_2 == "control") &
+          (is.na(time_4) | time_4 == "control") &
+          ( (time_0 == "control" & !is.na(time_0)) | # Ensure at least one actual 'control' observation
+              (time_2 == "control" & !is.na(time_2)) |
+              (time_4 == "control" & !is.na(time_4)) ) ~ "Non_carrier",
+        
+        # Acquisition Carrier
+        ( (!is.na(time_0) & time_0 == "control") &
+            ((!is.na(time_2) & time_2 == "case") | (!is.na(time_4) & time_4 == "case"))
+        ) |
+          ( is.na(time_0) & (!is.na(time_2) & time_2 == "control") & (!is.na(time_4) & time_4 == "case")
+          ) ~ "Acquisition_carrier",
+        
+        # Clearance Carrier
+        ( (!is.na(time_0) & time_0 == "case") &
+            ((!is.na(time_2) & time_2 == "control") | (!is.na(time_4) & time_4 == "control"))
+        ) |
+          ( is.na(time_0) & (!is.na(time_2) & time_2 == "case") & (!is.na(time_4) & time_4 == "control")
+          ) ~ "Clearance_carrier",
+        
+        TRUE ~ "Undetermined" # Fallback for any other complex patterns not explicitly covered
+      )
+    ) %>%
+    dplyr::select(pid, carriage_group, susceptibility_group, time_0, time_2, time_4, available_timepoints)
+  
+  return(classified_df)
+}
+
+
+#' Add Carriage Columns to Dataset Sample Table
+#'
+#' Merges participant-level carriage group and susceptibility group classifications
+#' into the sample_table of a microtable object. Ensures rownames (SampleIDs)
+#' of the sample_table are preserved.
+#'
+#' @param dataset A microtable object.
+#' @param carriage_classification_df A data frame typically generated by
+#'   `classify_longitudinal_carriage`, containing 'pid', 'carriage_group',
+#'   and 'susceptibility_group'.
+#' @return The input microtable object with 'carriage_group' and
+#'   'susceptibility_group' columns added to its sample_table.
+#' @export
+#' @examples
+#' # Assuming 'my_dataset' is a microtable object and 'carriage_info' is from classify_longitudinal_carriage
+#' # my_dataset_updated <- add_carriage_columns_to_dataset(my_dataset, carriage_info)
+add_carriage_columns_to_dataset <- function(dataset, carriage_classification_df) {
+  if (!"sample_table" %in% names(dataset)) {
+    stop("Dataset must have a sample_table component.")
+  }
+  if (!"pid" %in% names(dataset$sample_table)) {
+    stop("dataset$sample_table must contain a 'pid' column for joining.")
+  }
+  if (!all(c("pid", "carriage_group", "susceptibility_group") %in% names(carriage_classification_df))) {
+    stop("carriage_classification_df must contain 'pid', 'carriage_group', and 'susceptibility_group' columns.")
+  }
+  
+  # Ensure 'pid' types are consistent for the join
+  current_sample_table <- dataset$sample_table
+  current_sample_table$pid <- as.character(current_sample_table$pid)
+  
+  temp_carriage_lookup <- carriage_classification_df %>%
+    dplyr::select(pid, carriage_group, susceptibility_group)
+  temp_carriage_lookup$pid <- as.character(temp_carriage_lookup$pid)
+  
+  # Store original rownames (SampleIDs) of the sample_table.
+  # Assumes the first column of sample_table contains the unique SampleIDs which also serve as rownames.
+  # This should have been set during the initial data import (e.g., by import_qiime2_data).
+  if (nrow(current_sample_table) > 0 && !is.null(rownames(current_sample_table)) &&
+      all(rownames(current_sample_table) == as.character(current_sample_table[[1]]))) {
+    original_sample_ids_in_order <- rownames(current_sample_table)
+  } else if (nrow(current_sample_table) > 0 && !is.null(current_sample_table[[1]])) {
+    original_sample_ids_in_order <- as.character(current_sample_table[[1]])
+    if (length(unique(original_sample_ids_in_order)) != nrow(current_sample_table)) {
+      stop("The first column of sample_table does not appear to contain unique SampleIDs. Cannot reliably preserve row order for rownames.")
+    }
+    if (is.null(rownames(current_sample_table)) || !all(rownames(current_sample_table) == original_sample_ids_in_order)) {
+      rownames(current_sample_table) <- original_sample_ids_in_order
+      # message("Rownames of sample_table were reset to values from its first column before the join.")
+    }
+  } else {
+    stop("Cannot determine unique SampleIDs for preserving rowname order. Ensure sample_table has valid rownames or a unique SampleID in its first column.")
+  }
+  
+  # Remove old/conflicting classification columns from sample_table before join
+  cols_to_remove <- c("carriage_group", "susceptibility_group", "carriage_status")
+  for (col_name in cols_to_remove) {
+    if (col_name %in% names(current_sample_table)) {
+      current_sample_table[[col_name]] <- NULL
+    }
+  }
+  
+  # Perform the left join
+  updated_sample_table <- current_sample_table %>%
+    dplyr::left_join(temp_carriage_lookup, by = "pid")
+  
+  # CRITICAL STEP: Restore/Set rownames using the original SampleID order
+  if (nrow(updated_sample_table) == length(original_sample_ids_in_order)) {
+    rownames(updated_sample_table) <- original_sample_ids_in_order
+  } else {
+    # This case should ideally not happen if 'pid' correctly maps classifications to samples.
+    warning("Number of rows in sample_table changed unexpectedly after join. Rowname restoration might be incorrect. Further investigation needed.")
+    # Attempt a fallback if the first column still represents unique SampleIDs and matches the new row count
+    if (length(unique(as.character(updated_sample_table[[1]]))) == nrow(updated_sample_table)) {
+      rownames(updated_sample_table) <- as.character(updated_sample_table[[1]])
+      # message("Attempted to restore rownames from the first column after row number change during join.")
+    }
+  }
+  
+  dataset$sample_table <- updated_sample_table
+  return(dataset)
+}
+
+#' Remove Batch 4 Samples from a Microtable Dataset
+#'
+#' Creates a new microtable object that specifically excludes samples
+#' belonging to batch "4". It subsets the sample_table and otu_table
+#' and then tidies the new dataset to ensure consistency.
+#'
+#' @param dataset_original A microtable object. Assumes this object has a
+#'   sample_table with a column named "batch" and that the first column
+#'   of sample_table contains unique SampleIDs that are also its rownames
+#'   and correspond to otu_table colnames.
+#' @return A new microtable object with batch "4" samples removed.
+#'   Returns the original dataset with a warning if the 'batch' column is missing
+#'   or if no batch "4" samples are found.
+#' @export
+#' @examples
+#' # Assuming 'my_dataset' is a microtable object:
+#' # dataset_no_b4 <- remove_batch4(my_dataset)
+#' # plot_pcoa(dataset = remove_batch4(my_dataset), ...)
+remove_batch4 <- function(dataset_original) {
+  if (!inherits(dataset_original, "microtable")) {
+    stop("Input 'dataset_original' must be a microtable object.")
+  }
+  if (!"batch" %in% colnames(dataset_original$sample_table)) {
+    warning("Column 'batch' not found in sample_table. Returning original dataset.")
+    return(dataset_original)
+  }
+  
+  # Create a true clone to work on, so the original dataset is not modified
+  dataset_filtered <- dataset_original$clone(deep = TRUE)
+  
+  # Ensure the 'batch' column is character for consistent filtering
+  dataset_filtered$sample_table$batch <- as.character(dataset_filtered$sample_table$batch)
+  
+  # Identify the SampleIDs to keep (those NOT in Batch "4")
+  # Assumes the first column of sample_table holds the SampleIDs and these are also the rownames.
+  # This should be ensured by your import_qiime2_data function.
+  
+  # Defensive check for rownames based on first column
+  sample_ids_from_col1 <- as.character(dataset_filtered$sample_table[[1]])
+  if (is.null(rownames(dataset_filtered$sample_table)) || 
+      !all(rownames(dataset_filtered$sample_table) == sample_ids_from_col1)) {
+    if (length(unique(sample_ids_from_col1)) == nrow(dataset_filtered$sample_table)) {
+      rownames(dataset_filtered$sample_table) <- sample_ids_from_col1
+      # message("Rownames of sample_table in the clone were aligned with its first column for filtering.")
+    } else {
+      stop("First column of sample_table does not contain unique SampleIDs. Cannot reliably filter by batch.")
+    }
+  }
+  
+  samples_to_keep_ids <- dataset_filtered$sample_table %>%
+    dplyr::filter(batch != "4") %>%
+    rownames() # Pull the rownames, which are the SampleIDs
+  
+  if (length(samples_to_keep_ids) == nrow(dataset_filtered$sample_table)) {
+    message("No samples from batch '4' found to remove. Returning a clone of the original dataset.")
+    return(dataset_filtered) # Or return(dataset_original) if no clone is needed in this case
+  }
+  
+  if (length(samples_to_keep_ids) == 0 && nrow(dataset_filtered$sample_table) > 0) {
+    warning("Filtering for batch '4' resulted in zero samples to keep. This might indicate an issue or that all samples were batch 4.")
+    # Return an empty-like structure or stop, based on desired behavior
+    dataset_filtered$sample_table <- dataset_filtered$sample_table[0, , drop = FALSE]
+    dataset_filtered$otu_table <- dataset_filtered$otu_table[, 0, drop = FALSE]
+    dataset_filtered$tidy_dataset() # Tidy will handle taxa consistency
+    return(dataset_filtered)
+  }
+  
+  
+  # Subset the sample_table using the identified SampleIDs (which are rownames)
+  dataset_filtered$sample_table <- dataset_filtered$sample_table[samples_to_keep_ids, , drop = FALSE]
+  
+  # Subset the otu_table (samples are typically columns in microeco's otu_table)
+  otu_samples_as_colnames <- colnames(dataset_filtered$otu_table)
+  samples_in_otu_to_keep <- otu_samples_as_colnames[otu_samples_as_colnames %in% samples_to_keep_ids]
+  
+  if (length(samples_in_otu_to_keep) < length(samples_to_keep_ids) && length(samples_in_otu_to_keep) > 0) {
+    warning("Not all selected samples (from sample_table after filtering batch 4) were found in otu_table. Subsetting otu_table with available matches.")
+  } else if (length(samples_in_otu_to_keep) == 0 && length(samples_to_keep_ids) > 0) {
+    warning("None of the selected samples (from sample_table after filtering batch 4) were found in otu_table. Otu_table will be empty for these samples.")
+  }
+  dataset_filtered$otu_table <- dataset_filtered$otu_table[, samples_in_otu_to_keep, drop = FALSE]
+  
+  # Tidy the dataset_filtered to ensure consistency across all components
+  dataset_filtered$tidy_dataset()
+  
+  message(paste0("Successfully created a new dataset excluding batch '4'. Original samples: ", 
+                 nrow(dataset_original$sample_table), 
+                 ", Filtered samples: ", nrow(dataset_filtered$sample_table), "."))
+  
+  return(dataset_filtered)
+}
