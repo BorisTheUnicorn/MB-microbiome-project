@@ -750,3 +750,92 @@ remove_batch4 <- function(dataset_original) {
   
   return(dataset_filtered)
 }
+
+
+#' Filter Microtable Dataset by Metadata Criteria
+#'
+#' Creates a new microtable object containing only samples that meet specified
+#' criteria in the sample_table. Handles subsetting of sample_table, otu_table,
+#' and tidies the new dataset.
+#'
+#' @param dataset_original A microtable object.
+#' @param filter_conditions A named list where names are column names in
+#'   sample_table and values are the values to keep for that column.
+#'   For example, `list(carriage_group = c("Acquisition_carrier", "Non_carrier"), time = "0")`.
+#'   Can also accept dplyr filter expressions as a string (more advanced, requires care).
+#' @param sample_id_col The name or index of the column in sample_table
+#'   that contains the unique sample identifiers. Defaults to the first column.
+#' @return A new microtable object with the specified samples.
+#' @export
+filter_microeco_dataset <- function(dataset_original, filter_conditions, sample_id_col = 1) {
+  if (!inherits(dataset_original, "microtable")) {
+    stop("Input 'dataset_original' must be a microtable object.")
+  }
+  
+  dataset_filtered <- dataset_original$clone(deep = TRUE)
+  temp_sample_table <- dataset_filtered$sample_table
+  
+  # Ensure consistent SampleIDs as rownames for filtering
+  unique_ids_in_sample_table <- as.character(temp_sample_table[[sample_id_col]])
+  if (is.null(rownames(temp_sample_table)) ||
+      !all(rownames(temp_sample_table) == unique_ids_in_sample_table)) {
+    if (length(unique(unique_ids_in_sample_table)) == nrow(temp_sample_table)) {
+      rownames(temp_sample_table) <- unique_ids_in_sample_table
+    } else {
+      stop(paste0("Column specified by sample_id_col ('", names(temp_sample_table)[sample_id_col],
+                  "') does not contain unique identifiers. Cannot reliably filter."))
+    }
+  }
+  
+  # Apply filter conditions
+  # This example handles a list of column-value pairs for filtering.
+  # For more complex dplyr-like expressions, this part would need to be more sophisticated.
+  samples_to_keep_df <- temp_sample_table
+  if (is.list(filter_conditions)) {
+    for (col_name in names(filter_conditions)) {
+      if (!col_name %in% names(samples_to_keep_df)) {
+        warning(paste0("Filter column '", col_name, "' not found in sample_table. Skipping this condition."))
+        next
+      }
+      values_to_keep <- filter_conditions[[col_name]]
+      samples_to_keep_df <- samples_to_keep_df %>%
+        dplyr::filter(!!dplyr::sym(col_name) %in% values_to_keep)
+    }
+  } else if (is.character(filter_conditions) && length(filter_conditions) == 1) {
+    # Allow passing a dplyr filter string (use with caution, advanced)
+    samples_to_keep_df <- samples_to_keep_df %>%
+      dplyr::filter(eval(parse(text = filter_conditions)))
+  } else {
+    stop("filter_conditions must be a named list or a single dplyr filter string.")
+  }
+  
+  samples_to_keep_ids <- rownames(samples_to_keep_df)
+  
+  if (length(samples_to_keep_ids) == 0) {
+    message_text <- "No samples remaining after applying filter conditions: "
+    if(is.list(filter_conditions)) {
+      message_text <- paste0(message_text, paste(names(filter_conditions), sapply(filter_conditions, paste, collapse=","), sep="=", collapse=" & "))
+    } else {
+      message_text <- paste0(message_text, filter_conditions)
+    }
+    warning(message_text)
+    # Return an empty-like structure
+    dataset_filtered$sample_table <- dataset_filtered$sample_table[0, , drop = FALSE]
+    dataset_filtered$otu_table <- dataset_filtered$otu_table[, 0, drop = FALSE]
+    dataset_filtered$tidy_dataset()
+    return(dataset_filtered)
+  }
+  
+  dataset_filtered$sample_table <- dataset_filtered$sample_table[samples_to_keep_ids, , drop = FALSE]
+  
+  otu_samples_as_colnames <- colnames(dataset_filtered$otu_table)
+  samples_in_otu_to_keep <- otu_samples_as_colnames[otu_samples_as_colnames %in% samples_to_keep_ids]
+  dataset_filtered$otu_table <- dataset_filtered$otu_table[, samples_in_otu_to_keep, drop = FALSE]
+  
+  dataset_filtered$tidy_dataset()
+  
+  # message(paste0("Filtered dataset created. Original samples: ",
+  #                nrow(dataset_original$sample_table),
+  #                ", Filtered samples: ", nrow(dataset_filtered$sample_table), "."))
+  return(dataset_filtered)
+}

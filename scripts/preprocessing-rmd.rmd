@@ -307,11 +307,27 @@ if(is.null(dataset$beta_diversity)) {
   dataset$cal_betadiv(method = c("bray", "jaccard"))
 }
 
+acq_vs_non <- filter_microeco_dataset(
+  dataset,
+  filter_conditions = list(
+    carriage_group = c("Acquisition_carrier", "Non_carrier"),
+    batch = c(1, 2, 3)
+  )
+)
+
+clear_vs_pers <- filter_microeco_dataset(
+  dataset,
+  filter_conditions = list(
+    carriage_group = c("Clearance_carrier", "Persistent_carrier"),
+    batch = c(1, 2, 3)
+  )
+)
+
 # Taxonomic composition by carriage group
 taxa_comp_plot <- plot_taxa_composition(
-  dataset = dataset,
+  dataset = remove_batch4(dataset),
   tax_level = "Genus",
-  facet_vars = c("batch"), # Pass as a character vector
+  facet_vars = c("batch", "acquisition_group"), # Pass as a character vector
   n_taxa = 20,
   title = "Taxonomic Composition by Carriage Group and Batch"
 )
