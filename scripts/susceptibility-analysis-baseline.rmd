@@ -196,7 +196,7 @@ set.seed(123)
 ancombc2_result <- ancombc2(
   data = ps_suscept_original,
   tax_level = "Genus",
-  fix_formula = "carriage_group + cohort + selfsmoking + boardingschool + AB_month",
+  fix_formula = "carriage_group + batch",
   rand_formula = NULL,
   p_adj_method = "holm",
   pseudo_sens = TRUE,
