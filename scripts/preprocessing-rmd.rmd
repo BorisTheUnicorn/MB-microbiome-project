@@ -30,7 +30,6 @@ library(microbiome)
 library(phyloseq)
 library(qiime2R)
 library(microeco)
-library(tidyverse)
 library(GUniFrac)
 library(patchwork)
 library(readxl)
@@ -173,193 +172,259 @@ dataset_no_b4 <- remove_batch4(dataset)
 
 # Create ordination plots for potential batch effects and biological factors
 
-# Year
-plot_pcoa(
-  dataset = dataset, 
-  plot_color_var = "year", 
-  plot_shape_var = "batch", 
-  title = "Samples by Year"
-)
-
-# Batch
-plot_pcoa(
-  dataset = dataset,
-  plot_color_var = "batch",
-  plot_shape_var = "cohort", 
-  title = "Samples by Sequencing Batch"
-)
-
-# Time (0, 2, 4)
-plot_pcoa(
-  dataset = dataset_no_b4,
-  plot_color_var = "time",
-  plot_shape_var = "cohort",
-  facet_var = "batch",
-  title = "Samples by Time Point"
-)
-
-# Carriage
-plot_pcoa(
-  dataset = dataset_no_b4,
-  plot_color_var = "case_control",
-  plot_shape_var = "cohort",
-  facet_var = "batch",
-  title = "Samples by NM Carriage Status"
-)
-
-# Collection Date
-plot_pcoa(
-  dataset = dataset_no_b4,
-  plot_color_var = "collection_date",
-  plot_shape_var = "time",
-  facet_var = "batch",
-  title = "Samples by Collection Date"
-)
-
-# Season
-plot_pcoa(
-  dataset = dataset_no_b4,
-  plot_color_var = "season",
-  plot_shape_var = "cohort",
-  facet_var = "batch",
-  title = "Samples by Season"
-)
-
-# Cohort
-plot_pcoa(
-  dataset = dataset_no_b4,
-  plot_color_var = "cohort",
-  plot_shape_var = "time",
-  facet_var = "batch",
-  title = "Samples by Cohort"
-)
-
-# Ever vs. Never Carriers
-plot_pcoa(
-  dataset = dataset_no_b4,
-  plot_color_var = "susceptibility_group",
-  plot_shape_var = "cohort",
-  facet_var = "batch",
-  title = "Samples by Susceptibility Group"
-)
-
-# Carriage groups
-plot_pcoa(
-  dataset = dataset_no_b4,
-  plot_color_var = "carriage_group",
-  plot_shape_var = "cohort",
-  facet_var = "batch",
-  title = "Samples by Carriage Group"
-)
-
-```
-
-## 6. Export Preprocessed ANCOM data
-
-```{r export-data-ancom}
-# Save the dataset as RDS for later use
-saveRDS(dataset, file = file.path(processed_to_ANCOM_data_dir, "preprocessed_to_ANCOM_microbiome_dataset.rds"))
-
-# Convert to phyloseq for compatibility with other packages
-ps_object <- convert_to_phyloseq(dataset)
-saveRDS(ps_object, file = file.path(processed_to_ANCOM_data_dir, "preprocessed_to_ANCOM_phyloseq.rds"))
-
-# Export carriage classifications for reference
-write.csv(
-  carriage_patterns,
-  file = file.path(processed_to_ANCOM_data_dir, "carriage_to_ANCOM_classifications.csv"),
-  row.names = FALSE
-)
-
-# Create and save a summary of the preprocessing
-preprocessing_summary <- list(
-  sample_counts = list(
-    total_samples = nrow(dataset$sample_table),
-    samples_by_time = table(dataset$sample_table$time),
-    samples_by_carriage = table(dataset$sample_table$case_control),
-    samples_by_carriage_group = table(dataset$sample_table$carriage_group),
-    samples_by_susceptibility = table(dataset$sample_table$susceptibility_group)
+beta_div_pcoa <- list(
+  year = plot_pcoa(
+    dataset = dataset, 
+    plot_color_var = "year", 
+    plot_shape_var = "batch", 
+    title = "Samples by Year"
   ),
-  feature_counts = list(
-    total_features = nrow(dataset$otu_table),
-    features_by_phylum = tax_summary
+  batch = plot_pcoa(
+    dataset = dataset,
+    plot_color_var = "batch",
+    plot_shape_var = "cohort", 
+    title = "Samples by Sequencing Batch"
   ),
-  preprocessing_steps = c(
-    "Imported QIIME2 data",
-    "Filtered non-bacterial features and contaminants",
-    "create enhanced time variables",
-    "Classified longitudinal carriage patterns",
-    "Created expanded susceptibility grouping"
+  time = plot_pcoa(
+    dataset = dataset_no_b4,
+    plot_color_var = "time",
+    plot_shape_var = "cohort",
+    facet_var = "batch",
+    title = "Samples by Time Point"
+  ),
+  case_control = plot_pcoa(
+    dataset = dataset_no_b4,
+    plot_color_var = "case_control",
+    plot_shape_var = "cohort",
+    facet_var = "batch",
+    title = "Samples by NM Carriage Status"
+  ),
+  collection_date = plot_pcoa(
+    dataset = dataset_no_b4,
+    plot_color_var = "collection_date",
+    plot_shape_var = "time",
+    facet_var = "batch",
+    title = "Samples by Collection Date"
+  ),
+  season = plot_pcoa(
+    dataset = dataset_no_b4,
+    plot_color_var = "season",
+    plot_shape_var = "cohort",
+    facet_var = "batch",
+    title = "Samples by Season"
+  ),
+  cohort = plot_pcoa(
+    dataset = dataset_no_b4,
+    plot_color_var = "cohort",
+    plot_shape_var = "time",
+    facet_var = "batch",
+    title = "Samples by Cohort"
+  ),
+  sucs_group = plot_pcoa(
+    dataset = dataset_no_b4,
+    plot_color_var = "susceptibility_group",
+    plot_shape_var = "cohort",
+    facet_var = "batch",
+    title = "Samples by Susceptibility Group"
+  ),
+  carriage_group = plot_pcoa(
+    dataset = dataset_no_b4,
+    plot_color_var = "carriage_group",
+    plot_shape_var = "cohort",
+    facet_var = "batch",
+    title = "Samples by Carriage Group"
   )
 )
 
-saveRDS(preprocessing_summary, file = file.path(processed_to_ANCOM_data_dir, "preprocessing_to_ANCOM_summary.rds"))
+for (plot_name in names(beta_div_pcoa)) {
+  print(paste("Plotting:", plot_name))  # Optional: Print the plot name
+  print(beta_div_pcoa[[plot_name]])     # Print the ggplot object (displays the plot)
+}
+
 ```
 
-## 7. Create Basic Visualizations of Processed Data to ANCOM
+## 6. Create Basic Visualizations of Processed Data to ANCOM
 
 ```{r final-visualization-ancom}
-# Make sure alpha and beta diversity are calculated first
-if(is.null(dataset$alpha_diversity)) {
-  dataset$cal_alphadiv(measures = c("Shannon", "Simpson", "Observed"))
-}
-if(is.null(dataset$beta_diversity)) {
-  dataset$cal_betadiv(method = c("bray", "jaccard"))
-}
+
+# filter datasets
+dataset_no_b4 <- remove_batch4(dataset)
 
 acq_vs_non <- filter_microeco_dataset(
-  dataset,
-  filter_conditions = list(
-    carriage_group = c("Acquisition_carrier", "Non_carrier"),
-    batch = c(1, 2, 3)
-  )
+  dataset_no_b4,
+  filter_conditions = list(carriage_group = c("Acquisition_carrier", "Non_carrier"))
 )
 
 clear_vs_pers <- filter_microeco_dataset(
-  dataset,
-  filter_conditions = list(
-    carriage_group = c("Clearance_carrier", "Persistent_carrier"),
-    batch = c(1, 2, 3)
+  dataset_no_b4,
+  filter_conditions = list(carriage_group = c("Clearance_carrier", "Persistent_carrier"))
+)
+
+# taxa comp list
+taxa_composition_analysis <- list(
+  susc_group = plot_taxa_composition(
+    dataset = dataset_no_b4,
+    tax_level = "Genus",
+    facet_vars = c("batch", "susceptibility_group"), # Pass as a character vector
+    n_taxa = 15,
+    title = "Taxonomic Composition by Susceptibility Group and Batch"
+  ),
+  susc_analysis = plot_taxa_composition(
+    dataset = acq_vs_non,
+    tax_level = "Genus",
+    facet_vars = c("batch", "carriage_group"), # Pass as a character vector
+    n_taxa = 15,
+    title = "Susceptibility Analysis: Taxonomic Composition by Carriage Group and Batch"
+  ),
+    res_analysis = plot_taxa_composition(
+    dataset = clear_vs_pers,
+    tax_level = "Genus",
+    facet_vars = c("batch", "carriage_group"), # Pass as a character vector
+    n_taxa = 15,
+    title = "Resilience Analysis: Taxonomic Composition by Carriage Group and Batch"
   )
 )
 
-# Taxonomic composition by carriage group
-taxa_comp_plot <- plot_taxa_composition(
-  dataset = remove_batch4(dataset),
-  tax_level = "Genus",
-  facet_vars = c("batch", "acquisition_group"), # Pass as a character vector
-  n_taxa = 20,
-  title = "Taxonomic Composition by Carriage Group and Batch"
+for (plot_name in names(taxa_composition_analysis)) {
+  print(paste("Plotting:", plot_name))  # Optional: Print the plot name
+  print(taxa_composition_analysis[[plot_name]])     # USE [[plot_name]] HERE
+}
+
+## Alpha Diversity Analysis by Comparison Groups (Faceted by Batch)
+
+# Ensure alpha diversity is calculated on the relevant datasets if not already done.
+# It's generally best to calculate it on the specific subset you're plotting.
+
+# For dataset_no_b4 (used for susceptibility_group comparison)
+if(is.null(dataset_no_b4$alpha_diversity)) {
+  message("Calculating alpha diversity for 'dataset_no_b4'")
+  dataset_no_b4$cal_alphadiv(measures = c("Shannon", "Simpson", "Observed"))
+}
+
+# For acq_vs_non
+if(is.null(acq_vs_non$alpha_diversity)) {
+  message("Calculating alpha diversity for 'acq_vs_non'")
+  acq_vs_non$cal_alphadiv(measures = c("Shannon", "Simpson", "Observed"))
+}
+
+# For clear_vs_pers
+if(is.null(clear_vs_pers$alpha_diversity)) {
+  message("Calculating alpha diversity for 'clear_vs_pers'")
+  clear_vs_pers$cal_alphadiv(measures = c("Shannon", "Simpson", "Observed"))
+}
+
+# Define the measures you want to plot
+alpha_measures_to_plot <- c("Shannon", "Simpson", "Observed")
+
+# Initialize a list to store all alpha diversity plots
+alpha_diversity_analysis_plots <- list()
+
+# Loop through each measure to create a set of comparison plots for that measure
+for (measure in alpha_measures_to_plot) {
+  
+  message(paste("\n--- Generating Alpha Diversity Plots for Measure:", measure, "---"))
+  
+  # 1. Susceptibility Group Comparison (Ever vs Never)
+  if (nrow(dataset_no_b4$sample_table) > 1 && length(unique(dataset_no_b4$sample_table$susceptibility_group)) == 2) {
+    plot_susc_group <- plot_alpha_diversity(
+      dataset = dataset_no_b4,
+      group_var = "susceptibility_group",
+      measures = c(measure), # Current measure
+      facet_var = "batch",   # Facet by batch
+      title = paste(measure, "by Susceptibility Group (Faceted by Batch)"),
+      ggtheme = theme_bw(base_size = 10) + 
+                theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+    )
+    alpha_diversity_analysis_plots[[paste0(measure, "_susc_group")]] <- plot_susc_group
+  } else {
+    message("Skipping susceptibility_group alpha plot: not enough data or groups.")
+    alpha_diversity_analysis_plots[[paste0(measure, "_susc_group")]] <- NULL # Placeholder
+  }
+
+  # 2. Susceptibility Analysis (Acquisition vs Non-carriers)
+  if (nrow(acq_vs_non$sample_table) > 1 && length(unique(acq_vs_non$sample_table$carriage_group)) == 2) {
+    plot_susc_analysis <- plot_alpha_diversity(
+      dataset = acq_vs_non,
+      group_var = "carriage_group",
+      measures = c(measure), # Current measure
+      facet_var = "batch",   # Facet by batch
+      title = paste(measure, ": Acq. vs Non-carriers (Faceted by Batch)"),
+      ggtheme = theme_bw(base_size = 10) + 
+                theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+    )
+    alpha_diversity_analysis_plots[[paste0(measure, "_susc_analysis")]] <- plot_susc_analysis
+  } else {
+    message("Skipping acq_vs_non alpha plot: not enough data or groups.")
+    alpha_diversity_analysis_plots[[paste0(measure, "_susc_analysis")]] <- NULL
+  }
+  
+  # 3. Resilience Analysis (Clearance vs Persistent carriers)
+  if (nrow(clear_vs_pers$sample_table) > 1 && length(unique(clear_vs_pers$sample_table$carriage_group)) == 2) {
+    plot_res_analysis <- plot_alpha_diversity(
+      dataset = clear_vs_pers,
+      group_var = "carriage_group",
+      measures = c(measure), # Current measure
+      facet_var = "batch",   # Facet by batch
+      title = paste(measure, ": Clear. vs Pers. Carriers (Faceted by Batch)"),
+      ggtheme = theme_bw(base_size = 10) + 
+                theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+    )
+    alpha_diversity_analysis_plots[[paste0(measure, "_res_analysis")]] <- plot_res_analysis
+  } else {
+    message("Skipping clear_vs_pers alpha plot: not enough data or groups.")
+    alpha_diversity_analysis_plots[[paste0(measure, "_res_analysis")]] <- NULL
+  }
+}
+
+# Print all generated alpha diversity plots
+for (plot_name in names(alpha_diversity_analysis_plots)) {
+  if (!is.null(alpha_diversity_analysis_plots[[plot_name]])) {
+    print(paste("Plotting Alpha Diversity:", plot_name))
+    print(alpha_diversity_analysis_plots[[plot_name]])
+  }
+}
+
+# Calc beta diversities
+dataset_no_b4$cal_betadiv(method = c("bray", "jaccard"))
+acq_vs_non$cal_betadiv(method = c("bray", "jaccard"))
+clear_vs_pers$cal_betadiv(method = c("bray", "jaccard"))
+
+
+longitudinal_pcoa_faceted_plots <- list(
+  susc_group = plot_longitudinal_pcoa_faceted(
+    dataset = dataset_no_b4,
+    subject_var = "pid",
+    time_var = "time",
+    group_var = "susceptibility_group", # Color lines by susceptibility
+    facet_var = "batch",               # Facet by batch
+    title = "Longitudinal PCoA by Susceptibility Group"
+  ),
+  susc_analysis = plot_longitudinal_pcoa_faceted(
+    dataset = acq_vs_non,
+    subject_var = "pid",
+    time_var = "time",
+    group_var = "carriage_group", # Color lines by susceptibility
+    facet_var = "batch",               # Facet by batch
+    title = "Susceptibility Analysis: Longitudinal PCoA"
+  ),
+  res_analysis = plot_longitudinal_pcoa_faceted(
+    dataset = clear_vs_pers,
+    subject_var = "pid",
+    time_var = "time",
+    group_var = "carriage_group", # Color lines by susceptibility
+    facet_var = "batch",               # Facet by batch
+    title = "Resilience Analysis: Longitudinal PCoA"
+  )
 )
 
-# Alpha diversity by carriage group
-alpha_div_plot <- plot_alpha_diversity(
-  dataset = dataset,
-  group_var = "carriage_group",
-  title = "Alpha Diversity by Carriage Group"
-)
+for (plot_name in names(longitudinal_pcoa_faceted_plots)) {
+  print(paste("Plotting:", plot_name))  # Optional: Print the plot name
+  print(longitudinal_pcoa_faceted_plots[[plot_name]])     # USE [[plot_name]] HERE
+}
 
-# Longitudinal PCoA for carriage groups
-longitudinal_pcoa <- plot_longitudinal_pcoa(
-  dataset = dataset,
-  subject_var = "pid",
-  time_var = "time",
-  group_var = "carriage_group",
-  title = "Longitudinal Microbiome Trajectories by Carriage Group"
-)
-
-# Display the plots
-print(taxa_comp_plot)
-print(alpha_div_plot)
-print(longitudinal_pcoa)
-
-# Save the plots
-ggsave(file.path(processed_to_ANCOM_data_dir, "taxa_composition_to_ANCOM.png"), taxa_comp_plot, width = 12, height = 8)
-ggsave(file.path(processed_to_ANCOM_data_dir, "alpha_diversity_to_ANCOM.png"), alpha_div_plot, width = 12, height = 8)
-ggsave(file.path(processed_to_ANCOM_data_dir, "longitudinal_pcoa_to_ANCOM.png"), longitudinal_pcoa, width = 12, height = 8)
 ```
 
-## 8. Performe CLR transformation on data
+## 7. Performe CLR transformation on data
 
 ```{r CLR}
 # — CLR Transformation for Compositional Microbiome Data —
@@ -390,79 +455,201 @@ head(dataset_clr$otu_table)
 
 ```
 
+## 8. Export Core Processed Data and Summaries
 
-## 9. Export Preprocessed data after CLR
+```{r export-data}
+# Ensure the output directories exist
+if(!dir.exists(processed_to_ANCOM_data_dir)) {
+  dir.create(processed_to_ANCOM_data_dir, recursive = TRUE)
+}
+if(!dir.exists(processed_CLR_data_dir)) {
+  dir.create(processed_CLR_data_dir, recursive = TRUE)
+}
 
-```{r export-data-CLR}
-# Save the dataset as RDS for later use
-saveRDS(dataset_clr, file = file.path(processed_CLR_data_dir, "preprocessed_CLR_microbiome_dataset.rds"))
+# --- Save Core Dataset Objects (Pre-CLR) ---
 
-# Convert to phyloseq for compatibility with other packages
-ps_object <- convert_to_phyloseq(dataset_clr)
-saveRDS(ps_object, file = file.path(processed_CLR_data_dir, "preprocessed_CLR_phyloseq.rds"))
+# 1. Full 'dataset' object with all samples, time variables, and carriage classifications.
+# This 'dataset' is the one progressively built through chunks 2, 3, and 4.
+saveRDS(dataset, file = file.path(processed_to_ANCOM_data_dir, "nm_microbiome_dataset_classified_full.rds"))
 
-# Export carriage classifications for reference
+# 2. Phyloseq version of the full 'dataset'
+ps_object_classified_full <- convert_to_phyloseq(dataset)
+saveRDS(ps_object_classified_full, file = file.path(processed_to_ANCOM_data_dir, "nm_phyloseq_classified_full.rds"))
+
+# --- Save Core CLR-transformed Dataset Objects ---
+
+# 3. Full 'dataset_clr' (all samples from 'dataset' after CLR transformation)
+# This 'dataset_clr' was created in chunk 'CLR' from the full 'dataset'.
+saveRDS(dataset_clr, file = file.path(processed_CLR_data_dir, "nm_microbiome_dataset_clr_full.rds"))
+
+# 4. Phyloseq version of the full 'dataset_clr'
+ps_object_clr_full <- convert_to_phyloseq(dataset_clr)
+saveRDS(ps_object_clr_full, file = file.path(processed_CLR_data_dir, "nm_phyloseq_clr_full.rds"))
+
+# --- Save Key Summary and Classification Tables ---
+
+# 5. Participant-level carriage summary table
+# 'participant_carriage_summary' was created in chunk 'carriage-classification'.
 write.csv(
-  carriage_patterns,
-  file = file.path(processed_CLR_data_dir, "carriage_CLR_classifications.csv"),
+  participant_carriage_summary,
+  file = file.path(processed_to_ANCOM_data_dir, "participant_carriage_summary.csv"),
+  row.names = FALSE
+)
+# Also save a copy in CLR dir for convenience.
+write.csv(
+  participant_carriage_summary,
+  file = file.path(processed_CLR_data_dir, "participant_carriage_summary.csv"),
   row.names = FALSE
 )
 
-# Create and save a summary of the preprocessing
-preprocessing_summary <- list(
-  sample_counts = list(
-    total_samples = nrow(dataset_clr$sample_table),
-    samples_by_time = table(dataset_clr$sample_table$time),
-    samples_by_carriage = table(dataset_clr$sample_table$case_control),
-    samples_by_carriage_group = table(dataset_clr$sample_table$carriage_group),
-    samples_by_susceptibility = table(dataset_clr$sample_table$susceptibility_group)
+# 6. Overall Preprocessing Summary
+# This summary will now reflect the state of the full 'dataset' and 'dataset_clr'.
+# The object 'tax_summary' was created in chunk 'data-inspection'.
+preprocessing_summary_final <- list(
+  dataset_details = list(
+    total_samples_in_exported_dataset = nrow(dataset$sample_table),
+    total_features_in_exported_dataset = nrow(dataset$otu_table),
+    taxonomic_levels_available = colnames(dataset$tax_table)
   ),
-  feature_counts = list(
-    total_features = nrow(dataset_clr$otu_table),
-    features_by_phylum = tax_summary
+  sample_counts_in_full_dataset = list(
+    samples_by_time = table(dataset$sample_table$time, useNA = "ifany"),
+    samples_by_case_control_status = table(dataset$sample_table$case_control, useNA = "ifany"),
+    samples_by_batch = table(dataset$sample_table$batch, useNA = "ifany"),
+    samples_by_cohort = table(dataset$sample_table$cohort, useNA = "ifany"),
+    samples_by_season = table(dataset$sample_table$season, useNA = "ifany"),
+    samples_by_carriage_group_per_sample = table(dataset$sample_table$carriage_group, useNA = "ifany"),
+    samples_by_susceptibility_group_per_sample = table(dataset$sample_table$susceptibility_group, useNA = "ifany")
   ),
-  preprocessing_steps = c(
-    "Imported QIIME2 data",
-    "Filtered non-bacterial features and contaminants",
-    "create enhanced time variables",
-    "Classified longitudinal carriage patterns",
-    "Created expanded susceptibility grouping",
-    "Performe CLR transformation on data"
+  feature_summary_from_full_dataset = list(
+    total_features = nrow(dataset$otu_table),
+    features_by_phylum = tax_summary # Created in 'data-inspection' chunk
+  ),
+  participant_classification_summary = list(
+      carriage_group_counts_per_pid = table(participant_carriage_summary$carriage_group, useNA = "ifany"),
+      susceptibility_group_counts_per_pid = table(participant_carriage_summary$susceptibility_group, useNA = "ifany")
+  ),
+  processing_steps_overview = c(
+    "Imported QIIME2 data (table, taxonomy, tree, metadata)",
+    "Initial microeco tidying (removed Mitochondria, Chloroplast based on tax_table)",
+    "Created enhanced time variables (collection_date, season, months_since_start)",
+    "Classified longitudinal carriage status per participant (participant_carriage_summary created)",
+    "Added participant-level classifications (carriage_group, susceptibility_group) to sample metadata in 'dataset'",
+    "Calculated beta diversity metrics (incl. UniFrac) on the full 'dataset'",
+    "Performed CLR transformation on the full 'dataset' to create 'dataset_clr'"
+  ),
+  output_directories = list(
+    ancom_data_dir = processed_to_ANCOM_data_dir,
+    clr_data_dir = processed_CLR_data_dir
+  ),
+  notes = "Subsetting for specific analyses (e.g., batch 4 removal, acq_vs_non) to be performed in downstream analysis scripts.",
+  date_processed = Sys.Date()
+)
+
+saveRDS(preprocessing_summary_final, file = file.path(processed_to_ANCOM_data_dir, "preprocessing_pipeline_summary_final.rds"))
+saveRDS(preprocessing_summary_final, file = file.path(processed_CLR_data_dir, "preprocessing_pipeline_summary_final.rds"))
+
+print("Core processed datasets (full classified & full CLR), their phyloseq versions, participant classifications, and a summary have been exported.")
+```
+## 9. Save Key Visualizations
+
+```{r}
+# Define a subdirectory for preprocessing plots within the main results directory
+preprocessing_plots_dir <- file.path("..", "results", "preprocessing_plots") # Adjusted path assuming Rmd is in a 'scripts' or similar subdir
+if(!dir.exists(preprocessing_plots_dir)) {
+  dir.create(preprocessing_plots_dir, recursive = TRUE)
+}
+
+# --- Save Beta Diversity PCoA Plots (from chunk 'beta-diversity') ---
+if (exists("beta_div_pcoa") && length(beta_div_pcoa) > 0) {
+  for (plot_name in names(beta_div_pcoa)) {
+    if (!is.null(beta_div_pcoa[[plot_name]])) {
+      ggsave(
+        filename = file.path(preprocessing_plots_dir, paste0("beta_pcoa_", plot_name, ".png")),
+        plot = beta_div_pcoa[[plot_name]],
+        width = 10,
+        height = 7,
+        dpi = 300
+      )
+      message(paste("Saved plot:", paste0("beta_pcoa_", plot_name, ".png")))
+    }
+  }
+} else {
+  message("beta_div_pcoa object not found or is empty. Skipping PCoA plot saving.")
+}
+
+# --- Save Taxa Composition Plots (from chunk 'final-visualization-ancom') ---
+if (exists("taxa_composition_analysis") && length(taxa_composition_analysis) > 0) {
+  for (plot_name in names(taxa_composition_analysis)) {
+    if (!is.null(taxa_composition_analysis[[plot_name]])) {
+      ggsave(
+        filename = file.path(preprocessing_plots_dir, paste0("taxa_comp_", plot_name, ".png")),
+        plot = taxa_composition_analysis[[plot_name]],
+        width = 12, # Adjusted for potentially wider faceted plots
+        height = 8,
+        dpi = 300
+      )
+      message(paste("Saved plot:", paste0("taxa_comp_", plot_name, ".png")))
+    }
+  }
+} else {
+  message("taxa_composition_analysis object not found or is empty. Skipping taxa composition plot saving.")
+}
+
+# --- Save Alpha Diversity Plots (from chunk 'final-visualization-ancom') ---
+if (exists("alpha_diversity_analysis_plots") && length(alpha_diversity_analysis_plots) > 0) {
+  for (plot_name in names(alpha_diversity_analysis_plots)) {
+    if (!is.null(alpha_diversity_analysis_plots[[plot_name]])) {
+      ggsave(
+        filename = file.path(preprocessing_plots_dir, paste0("alpha_div_", plot_name, ".png")),
+        plot = alpha_diversity_analysis_plots[[plot_name]],
+        width = 10,
+        height = 7,
+        dpi = 300
+      )
+      message(paste("Saved plot:", paste0("alpha_div_", plot_name, ".png")))
+    }
+  }
+} else {
+  message("alpha_diversity_analysis_plots object not found or is empty. Skipping alpha diversity plot saving.")
+}
+
+# --- Save Longitudinal PCoA (Faceted) Plots (from chunk 'final-visualization-ancom') ---
+if (exists("longitudinal_pcoa_faceted_plots") && length(longitudinal_pcoa_faceted_plots) > 0) {
+  for (plot_name in names(longitudinal_pcoa_faceted_plots)) {
+    if (!is.null(longitudinal_pcoa_faceted_plots[[plot_name]])) {
+      ggsave(
+        filename = file.path(preprocessing_plots_dir, paste0("longitudinal_pcoa_faceted_", plot_name, ".png")),
+        plot = longitudinal_pcoa_faceted_plots[[plot_name]],
+        width = 12, # Often these benefit from more width
+        height = 8,
+        dpi = 300
+      )
+      message(paste("Saved plot:", paste0("longitudinal_pcoa_faceted_", plot_name, ".png")))
+    }
+  }
+} else {
+  message("longitudinal_pcoa_faceted_plots object not found or is empty. Skipping longitudinal PCoA plot saving.")
+}
+
+# --- Save the initial time distribution plot (from chunk 'import-data') ---
+if (exists("time_dist_plot")) {
+  ggsave(
+    filename = file.path(preprocessing_plots_dir, "sample_distribution_by_collection_date.png"),
+    plot = time_dist_plot,
+    width = 8,
+    height = 6,
+    dpi = 300
   )
-)
-
-saveRDS(preprocessing_summary, file = file.path(processed_CLR_data_dir, "preprocessing_CLR_summary.rds"))
-```
-
-## 10. Create Basic Visualizations of Processed Data to After CLR
-
-```{r final-visualization-CLR}
-# Make sure alpha and beta diversity are calculated first
-if(is.null(dataset_clr$alpha_diversity)) {
-  dataset_clr$cal_alphadiv(measures = c("Shannon", "Simpson", "Observed"))
-}
-if(is.null(dataset_clr$beta_diversity)) {
-  dataset_clr$cal_betadiv(method = c("Euclidean"))
+  message("Saved plot: sample_distribution_by_collection_date.png")
+} else {
+  message("time_dist_plot object not found. Skipping time distribution plot saving.")
 }
 
-# Longitudinal PCoA for carriage groups
-longitudinal_pcoa_CLR <- plot_longitudinal_pcoa(
-  dataset = dataset_clr,
-  subject_var = "pid",
-  time_var = "time",
-  group_var = "carriage_group",
-  title = "Longitudinal Microbiome Trajectories by Carriage Group after CLR"
-)
-
-# Display the plot
-print(longitudinal_pcoa_CLR)
-
-# Save the plot
-ggsave(file.path(processed_CLR_data_dir, "longitudinal_pcoa_CLR.png"), longitudinal_pcoa_CLR, width = 12, height = 8)
+print(paste("All generated plots have been saved to:", preprocessing_plots_dir))
 ```
 
 
-## 11. Session Info
+## 9. Session Info
 
 ```{r session-info}
 sessionInfo()
