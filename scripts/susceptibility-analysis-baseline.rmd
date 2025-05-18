@@ -627,7 +627,33 @@ lapply(baseline_ancom_models, function(model) {
 })
 ```
 
+```{r load-ancombc2-baseline-models, include=FALSE}
+# # Define the path to the saved ANCOM-BC2 model results
+ancom_results_rds_file <- file.path(results_dir, "baseline_susceptibility_ancombc2_models.rds")
 
+# # Initialize an empty list for the models
+baseline_ancom_models <- list()
+
+# # Check if the RDS file exists
+if (file.exists(ancom_results_rds_file)) {
+  # If it exists, load the models from the RDS file
+  message(paste("Loading existing ANCOM-BC2 models from:", ancom_results_rds_file))
+  baseline_ancom_models <- readRDS(ancom_results_rds_file)
+  
+  # Optional: Briefly verify the loaded models (e.g., print names)
+  print("Loaded ANCOM-BC2 model names:")
+  print(names(baseline_ancom_models))
+  
+  # Set a flag to skip model generation if they are successfully loaded
+  # This assumes you'll add a condition to your model generation chunk
+  # For example: if (!exists("models_loaded_successfully") || !models_loaded_successfully) { ... run models ... }
+  # For now, we are simply loading them if they exist. The ancombc2-baseline-models chunk will overwrite this object if run.
+  # A more robust approach for skipping re-running would be to comment out the model fitting chunk itself.
+
+} else {
+  message(paste("ANCOM-BC2 model RDS file not found at:", ancom_results_rds_file, ". Models will be generated if the next chunk is run."))
+}
+```
 
 
 
