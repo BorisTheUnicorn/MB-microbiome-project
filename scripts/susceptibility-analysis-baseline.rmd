@@ -35,6 +35,8 @@ library(DT)
 library(patchwork)
 library(microbiome)
 library(viridis)
+library(ggpubr)
+library(knitr)
 
 # Source custom functions
 source("../R/preprocessing_functions.R")
@@ -56,9 +58,6 @@ if(!dir.exists(results_dir)) {
 ```{r load-data}
 # Load the preprocessed phyloseq object
 ps <- readRDS(file.path(processed_data_dir, "preprocessed_to_ANCOM_phyloseq.rds"))
-
-# Load the microbiome dataset for additional functionality if needed
-dataset <- readRDS(file.path(processed_data_dir, "preprocessed_to_ANCOM_microbiome_dataset.rds"))
 
 # Check that our carriage classifications are present
 print("Carriage group distribution:")
@@ -101,89 +100,577 @@ names(sample_data(ps))
 ```
 
 ## 3. Analysis Design and Data Subset Selection
+For this susceptibility analysis, we will focus on baseline samples (time point 0) from individuals classified as "Acquisition_carrier" or "Non_carrier". This will allow us to investigate initial microbiome differences that might predispose individuals to acquiring NM.
 
-Unlike the expanded susceptibility analysis, here we focus on the original carriage group classification. We'll examine differences between individuals who started as non-carriers and acquired NM at a later time point ("Acquisition_carrier") versus those who remained non-carriers throughout the study ("Non_carrier").
 
 ```{r subset-selection}
-# We'll focus on baseline samples (time point 0) to identify initial microbiome differences
-ps_baseline <- subset_samples(ps, time == "0")
+# The 'ps' object is loaded and has demographic data merged from the previous chunk.
 
-# Create original susceptibility analysis subset - focusing on acquisition vs non-carriers
-ps_suscept_original <- subset_samples(ps_baseline, 
-                                     carriage_group %in% c("Acquisition_carrier", "Non_carrier"))
+# Define ps_baseline: 
+# Filters from 'ps': 
+#   - time == "0" 
+#   - carriage_group %in% c("Acquisition_carrier", "Non_carrier")
+#   - batch != "4" (Batch 4 is excluded directly here)
 
-# Check sample sizes for our analysis
-print("Sample counts for original susceptibility analysis:")
-print(table(sample_data(ps_suscept_original)$carriage_group))
+ps_baseline <- subset_samples(ps, 
+                                time == "0" & 
+                                carriage_group %in% c("Acquisition_carrier", "Non_carrier") &
+                                batch != "4")
 
-# Verify that we have adequate data for comparison
-if(min(table(sample_data(ps_suscept_original)$carriage_group)) < 10) {
-  warning("Warning: One of the carriage groups has fewer than 10 samples. Results may be unstable.")
+if (nsamples(ps_baseline) > 0) {
+  current_cg_levels <- levels(as.factor(sample_data(ps_baseline)$carriage_group))
+  if ("Non_carrier" %in% current_cg_levels && "Acquisition_carrier" %in% current_cg_levels) {
+    sample_data(ps_baseline)$carriage_group <- factor(sample_data(ps_baseline)$carriage_group, 
+                                                     levels = c("Non_carrier", "Acquisition_carrier"))
+    message("Re-leveled carriage_group in ps_baseline. New reference: ", levels(sample_data(ps_baseline)$carriage_group)[1])
+  } else {
+    warning("Could not re-level carriage_group: one or both expected levels not found.")
+  }
+}
+
+# Check sample sizes for the new ps_baseline
+print("Sample counts for ps_baseline (Time 0, Acquisition vs. Non-carriers, Batch 4 excluded):")
+if (nsamples(ps_baseline) > 0) {
+  print(table(sample_data(ps_baseline)$carriage_group, sample_data(ps_baseline)$batch, dnn=c("Carriage Group", "Batch")))
+  print(paste("Total samples in ps_baseline:", nsamples(ps_baseline)))
+
+  # Verify that we have adequate data for comparison within each carriage group (overall)
+  if(min(table(sample_data(ps_baseline)$carriage_group)) < 10) {
+    warning("Warning: One of the carriage groups in ps_baseline has fewer than 10 samples overall. Downstream results, especially group comparisons, may be unstable or have low power.")
+  } else {
+    print("Both carriage groups in ps_baseline have adequate overall sample sizes (≥10).")
+  }
+  
+  # Further check: Ensure each batch within each carriage group has enough samples for faceted plots/stats
+  count_table <- table(sample_data(ps_baseline)$carriage_group, sample_data(ps_baseline)$batch)
+  if (any(count_table > 0 & count_table < 3)) { # Check for groups with 1 or 2 samples within batches
+      warning("Some combinations of carriage_group and batch have very few samples (1 or 2). Faceted plots and within-batch statistical comparisons might be misleading or fail for these combinations.")
+  }
+  
 } else {
-  print("Both groups have adequate sample sizes (≥10). Analysis should be robust.")
+  warning("ps_baseline contains no samples after filtering. Please check your input data and filtering criteria (time, carriage_group, batch). EDA and ANCOM-BC2 will not proceed.")
+}
+
+# --- Calculate and Add Alpha Diversity Metrics to ps_baseline ---
+if (nsamples(ps_baseline) > 0) {
+  if (is.null(otu_table(ps_baseline, errorIfNULL = FALSE)) || ntaxa(ps_baseline) == 0) {
+      message("ps_baseline does not have a valid OTU table. Cannot calculate richness.")
+  } else {
+      alpha_metrics_to_calculate <- c("Shannon", "Simpson", "Observed")
+      message(paste("Calculating alpha diversity metrics for ps_baseline:", paste(alpha_metrics_to_calculate, collapse=", ")))
+      
+      # CRITICAL: Ensure otu_table(ps_baseline) has raw counts for estimate_richness.
+      # If 'ps' had relative abundances, this calculation for 'Observed'/'Chao1' might be incorrect.
+      # Assuming 'ps' (and thus ps_baseline initially) contains appropriate raw counts.
+      alpha_div_calculated <- estimate_richness(ps_baseline, measures = alpha_metrics_to_calculate)
+      
+      if (nrow(alpha_div_calculated) == nsamples(ps_baseline)) {
+        # Add calculated metrics as new columns to the sample_data of ps_baseline
+        for (metric_col in colnames(alpha_div_calculated)) {
+          sample_data(ps_baseline)[[metric_col]] <- alpha_div_calculated[[metric_col]]
+        }
+        message("Alpha diversity metrics calculated and added to sample_data of ps_baseline.")
+        # Verify
+        # print("First few rows of ps_baseline sample_data with new alpha metrics:")
+        # print(head(data.frame(sample_data(ps_baseline))[, c("carriage_group", "batch", alpha_metrics_to_calculate)]))
+      } else {
+        message("Error: Number of rows in calculated alpha diversity does not match number of samples in ps_baseline. Merge failed.")
+      }
+  }
+} else {
+    message("ps_baseline is empty, skipping alpha diversity calculation.")
+}
+
+# --- Check sample sizes for the ps_baseline object (now potentially with alpha metrics) ---
+print("Sample counts for ps_baseline (Time 0, Acquisition vs. Non-carriers, Batch 4 excluded):")
+if (nsamples(ps_baseline) > 0) {
+  print(table(sample_data(ps_baseline)$carriage_group, sample_data(ps_baseline)$batch, dnn=c("Carriage Group", "Batch")))
+  print(paste("Total samples in ps_baseline:", nsamples(ps_baseline)))
+
+  if(min(table(sample_data(ps_baseline)$carriage_group)) < 10) {
+    warning("Warning: One of the carriage groups in ps_baseline has fewer than 10 samples overall. Downstream results may be unstable.")
+  } else {
+    print("Both carriage groups in ps_baseline have adequate overall sample sizes (≥10).")
+  }
+  
+  count_table <- table(sample_data(ps_baseline)$carriage_group, sample_data(ps_baseline)$batch)
+  if (any(count_table > 0 & count_table < 3)) {
+      warning("Some combinations of carriage_group and batch have very few samples (1 or 2). Faceted plots and within-batch statistical comparisons might be misleading or fail for these combinations.")
+  }
+} else {
+  warning("ps_baseline contains no samples after initial filtering (before alpha calculation attempt). EDA and ANCOM-BC2 will not proceed.")
 }
 ```
 
-## 4. Exploratory Analysis of Original Carriage Groups
+## 4. Exploratory Analysis of Baseline Susceptibility Groups (ps_baseline)
+In this section, we explore the microbiome characteristics of the ps_baseline samples (Time 0, Acquisition vs. Non-carriers, Batch 4 excluded). All analyses will be faceted by or account for the remaining batches.
 
-Before conducting differential abundance analysis, we'll explore alpha and beta diversity patterns and overall taxonomic composition across our carriage groups.
+## 4.1 Alpha Diversity
+We examine alpha diversity at baseline between Acquisition carriers and Non-carriers, faceted by batch.
 
-```{r exploratory-analysis}
-# Plot alpha diversity by carriage group
-alpha_div_metrics <- c("Shannon", "Simpson", "Observed")
-alpha_plots <- list()
-
-for(metric in alpha_div_metrics) {
-  alpha_plots[[metric]] <- plot_richness(ps_suscept_original, x = "carriage_group", measures = metric) +
-    geom_boxplot(alpha = 0.6) +
-    labs(title = paste(metric, "Diversity by Carriage Group"),
-         x = "Carriage Group") +
-    theme_minimal() +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```{r 4.1-alpha-div}
+# Ensure ps_baseline is not empty before proceeding
+# This is a minimal check; we assume ps_baseline is correctly populated from previous chunks.
+if (nsamples(ps_baseline) == 0) {
+  stop("ps_baseline is empty. Cannot proceed with alpha diversity analysis.")
 }
 
-# Combine alpha diversity plots
-wrap_plots(alpha_plots, ncol = 2)
+alpha_metrics_to_plot <- c("Shannon", "Simpson", "Observed")
+current_sample_data_df <- data.frame(sample_data(ps_baseline)) # Used for plotting and stats
 
-# Beta diversity analysis (PCoA) by carriage group
-ord <- ordinate(ps_suscept_original, method = "PCoA", distance = "bray")
-beta_plot <- plot_ordination(ps_suscept_original, ord, color = "carriage_group") +
-  geom_point(size = 3, alpha = 0.7) +
-  stat_ellipse() +
-  labs(title = "PCoA of microbiome composition by carriage group",
-       color = "Carriage Group") +
-  theme_minimal()
-print(beta_plot)
+# --- Plotting ---
+alpha_plots_list <- list() # Optional: if you want to store plots
 
-# PERMANOVA test for statistical significance of beta diversity differences
-permanova_result <- vegan::adonis2(
-  phyloseq::distance(ps_suscept_original, method = "bray") ~ 
-    phyloseq::sample_data(ps_suscept_original)$carriage_group, 
-  permutations = 999
-)
-print("PERMANOVA results:")
-print(permanova_result)
+for(metric in alpha_metrics_to_plot) {
+  
+  # Ensure the metric column exists in the current sample data
+  if (!metric %in% colnames(current_sample_data_df)) {
+    message(paste("Metric '", metric, "' not found in sample_data of ps_baseline. Skipping this metric.", sep=""))
+    next # Skip to the next metric
+  }
+  
+  # Ensure factors for correct plotting order and faceting
+  plot_df <- current_sample_data_df
+  plot_df$carriage_group <- factor(plot_df$carriage_group, levels = c("Non_carrier", "Acquisition_carrier"))
+  plot_df$batch <- factor(plot_df$batch)
+  
+  cat(paste("\n--- Plotting for metric:", metric, "---\n"))
+  # Optional: print table for quick verification
+  # print(table(plot_df$batch, plot_df$carriage_group, useNA = "ifany"))
+      
+  p <- ggpubr::ggboxplot(plot_df, 
+                         x = "carriage_group", y = metric,
+                         color = "carriage_group", palette = "jco", # Example palette
+                         add = "jitter",
+                         facet.by = "batch", 
+                         short.panel.labs = FALSE) + 
+    labs(title = paste("Baseline", metric, "Diversity (Acq vs. Non) by Batch"),
+         x = "Carriage Group", y = paste(metric, "Index")) +
+    theme_minimal(base_size = 10) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+          legend.position = "top",
+          strip.text = element_text(size=10))
+  
+  # Add statistical comparison annotations for Batch 1 directly to the plot
+  # This assumes Batch "1" exists and has both carriage groups.
+  stat_test_batch1_for_plot <- plot_df %>%
+    filter(batch == "1") %>%
+    ggpubr::compare_means(as.formula(paste(metric, "~ carriage_group")), data = ., method = "wilcox.test") %>%
+    mutate(y.position = max(plot_df[[metric]], na.rm = TRUE) * 1.05, # Adjust y.position as needed
+           batch = "1") # Ensure the batch column is present for stat_pvalue_manual
 
-# Taxonomic composition by carriage group
-ps_genus <- tax_glom(ps_suscept_original, taxrank = "Genus")
-top_genera <- names(sort(taxa_sums(ps_genus), decreasing = TRUE))[1:15]
-ps_top_genera <- prune_taxa(top_genera, ps_genus)
+  if(nrow(stat_test_batch1_for_plot) > 0 && "p.signif" %in% names(stat_test_batch1_for_plot)){
+    p <- p + ggpubr::stat_pvalue_manual(
+      stat_test_batch1_for_plot, 
+      label = "p.signif",
+      hide.ns = TRUE,
+      tip.length = 0.01 # Optional: for brackets, if you use comparisons argument in compare_means
+    )
+  }
+  
+  alpha_plots_list[[metric]] <- p # Store the plot
+  print(p)
+  
+  # --- Console output for Batch 1 statistics ---
+  data_batch1 <- plot_df %>% filter(batch == "1")
+  
+  if (length(unique(data_batch1$carriage_group)) == 2 && sum(table(data_batch1$carriage_group) >= 3) == 2 && !all(is.na(data_batch1[[metric]]))) {
+    # Ensure at least 3 samples per group in batch 1 for Wilcoxon test
+    stat_test_batch1_console <- compare_means(as.formula(paste(metric, "~ carriage_group")), data = data_batch1, method = "wilcox.test")
+    cat(paste("\nWilcoxon test for", metric, "in Batch 1 (Acquisition_carrier vs. Non_carrier):\n"))
+    print(stat_test_batch1_console)
+  } else {
+    cat(paste("\nSkipping Wilcoxon test for", metric, "in Batch 1 due to insufficient samples in one or both groups (need N>=3 per group).\n"))
+    print(table(data_batch1$carriage_group)) # Show counts for context
+  }
+}
 
-# Convert to relative abundance
-ps_top_genera_rel <- transform_sample_counts(ps_top_genera, function(x) x / sum(x))
-
-# Plot taxonomic composition
-taxa_comp_plot <- plot_bar(ps_top_genera_rel, fill = "Genus", x = "carriage_group") +
-  labs(title = "Relative abundance of top 15 genera by carriage group",
-       x = "Carriage Group", 
-       y = "Relative Abundance") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "bottom")
-print(taxa_comp_plot)
 ```
 
-## 5. Differential Abundance Analysis with ANCOM-BC2
+### 4.2 Beta Diversity
+
+We will now explore community-level differences (beta diversity) between "Acquisition_carrier" and "Non_carrier" groups at baseline, using Bray-Curtis dissimilarity and Principal Coordinate Analysis (PCoA). Plots will be faceted by batch, and PERMANOVA will be used to assess statistical significance while accounting for batch and cohort effects.
+
+```{r 4.2-beta-div}
+# Ensure ps_baseline is not empty and has enough samples for beta diversity
+if (nsamples(ps_baseline) < 3) { # PCoA and PERMANOVA generally need at least 3 samples
+  message("ps_baseline has fewer than 3 samples. Skipping beta diversity analysis.")
+} else {
+
+  # --- 1. Calculate Beta Diversity Metrics ---
+  # We will calculate Bray-Curtis. Add others like "jaccard" if needed.
+  # Note: phyloseq::distance calculates on the otu_table of ps_baseline.
+  # Ensure otu_table(ps_baseline) contains appropriate data (counts or relative abundance).
+  # Bray-Curtis is generally robust to data type (counts/proportions).
+  
+  message("Calculating Bray-Curtis dissimilarity on ps_baseline...")
+  dist_bray_baseline <- phyloseq::distance(ps_baseline, method = "bray")
+  # Optional: Calculate Jaccard
+  # dist_jaccard_baseline <- phyloseq::distance(ps_baseline, method = "jaccard", binary = TRUE)
+
+  # --- 2. Perform PCoA ---
+  message("Performing PCoA on Bray-Curtis distances...")
+  ord_pcoa_bray_baseline <- ordinate(ps_baseline, method = "PCoA", distance = dist_bray_baseline)
+
+  # --- 3. Plot PCoA, Faceted by Batch ---
+  if (!is.null(ord_pcoa_bray_baseline$vectors)) { # Check if ordination was successful
+    
+    # Ensure 'cohort' is a factor for plotting if it exists and will be used for shape
+    sample_data_for_plot <- data.frame(sample_data(ps_baseline))
+    if ("cohort" %in% colnames(sample_data_for_plot)) {
+      sample_data_for_plot$cohort <- factor(sample_data_for_plot$cohort)
+      # Update phyloseq object if cohort was not already a factor
+      if(!is.factor(sample_data(ps_baseline)$cohort)){
+          sample_data(ps_baseline)$cohort <- factor(sample_data(ps_baseline)$cohort)
+      }
+    }
+    
+    # Extract explained variance for axis labels if available
+    axis_labels <- c("PCo1", "PCo2") # Default labels
+    if(!is.null(ord_pcoa_bray_baseline$values) && "Relative_eig" %in% names(ord_pcoa_bray_baseline$values)){
+        eigen_vals <- ord_pcoa_bray_baseline$values$Relative_eig
+        axis_labels <- c(paste0("PCo1 [", round(eigen_vals[1]*100, 1), "%]"),
+                         paste0("PCo2 [", round(eigen_vals[2]*100, 1), "%]"))
+    }
+
+
+    beta_plot_baseline <- plot_ordination(ps_baseline, ord_pcoa_bray_baseline, 
+                                       color = "carriage_group", 
+                                       shape = if("cohort" %in% names(sample_data(ps_baseline))) "cohort" else NULL) + # Use cohort for shape if available
+      geom_point(size = 3, alpha = 0.75) +
+      stat_ellipse(aes(group = carriage_group, fill = carriage_group), geom = "polygon", alpha = 0.2, show.legend = FALSE, type = "t") +
+      facet_wrap(~batch) + 
+      labs(title = "PCoA (Bray-Curtis) at Baseline (Acq vs. Non) by Batch",
+           x = axis_labels[1], y = axis_labels[2],
+           color = "Carriage Group", 
+           shape = if("cohort" %in% names(sample_data(ps_baseline))) "Cohort" else NULL) +
+      theme_bw(base_size = 10) +
+      theme(legend.position = "top", strip.text = element_text(size=10))
+    
+    print(beta_plot_baseline)
+  } else {
+    message("PCoA ordination failed. Cannot plot beta diversity.")
+  }
+
+  # --- 4. PERMANOVA Tests ---
+  sample_df_baseline <- data.frame(sample_data(ps_baseline))
+  
+  # Ensure there's enough data for PERMANOVA
+  if (nrow(sample_df_baseline) >= 3 && 
+      length(unique(sample_df_baseline$carriage_group)) > 1 &&
+      length(unique(sample_df_baseline$batch)) > 0 ) { # Batch needs to exist
+
+    # PERMANOVA 1: Accounting for batch
+    cat("\n--- PERMANOVA (carriage_group + batch) ---\n")
+    permanova_res_batch <- vegan::adonis2(
+      dist_bray_baseline ~ carriage_group + batch, 
+      data = sample_df_baseline, 
+      permutations = 999,
+      by = "terms" # Test terms sequentially
+    )
+    print(permanova_res_batch)
+
+    # PERMANOVA 2: Accounting for batch AND cohort (if cohort exists and has >1 level)
+    if ("cohort" %in% colnames(sample_df_baseline) && length(unique(sample_df_baseline$cohort)) > 1) {
+      cat("\n--- PERMANOVA (carriage_group + batch + cohort) ---\n")
+      permanova_res_batch_cohort <- vegan::adonis2(
+        dist_bray_baseline ~ carriage_group + batch + cohort, 
+        data = sample_df_baseline, 
+        permutations = 999,
+        by = "terms"
+      )
+      print(permanova_res_batch_cohort)
+    } else {
+      message("Cohort variable not suitable for PERMANOVA (missing, or only one level). Skipping PERMANOVA with cohort.")
+    }
+  } else {
+    message("Skipping PERMANOVA due to insufficient samples, groups, or batch variation in ps_baseline.")
+  }
+}
+
+# Optional: Display relevant beta diversity plots from preprocessing for context
+# These might show all time points or different subsets.
+preprocessing_plot_path_beta_longitudinal <- "../results/preprocessing_plots/longitudinal_pcoa_faceted_susc_analysis.png" 
+if (file.exists(preprocessing_plot_path_beta_longitudinal)) {
+  # print("Displaying pre-generated longitudinal PCoA plot from preprocessing (shows all time points for Acq vs Non):")
+  # knitr::include_graphics(preprocessing_plot_path_beta_longitudinal) 
+  # cat("Note: Baseline samples from 'Acquisition_carrier' and 'Non_carrier' groups are the starting points of trajectories in the plot above.\n")
+}
+
+```
+
+### 4.3 Taxonomic Composition
+
+We will visualize the relative abundance of major genera at baseline to compare "Acquisition_carrier" and "Non_carrier" groups, faceted by batch.
+
+```{r 4.3-taxonomic-composition}
+# Ensure ps_baseline is not empty
+if (nsamples(ps_baseline) == 0) {
+  stop("ps_baseline is empty. Cannot proceed with taxonomic composition analysis.")
+}
+
+# --- 1. Aggregate to Genus Level ---
+# NArm = FALSE will keep taxa that are unclassified at the Genus level, naming them by the lowest known rank
+ps_baseline_genus <- tax_glom(ps_baseline, taxrank = "Genus", NArm = FALSE) 
+
+# --- 2. Transform to Relative Abundance ---
+ps_baseline_genus_rel <- transform_sample_counts(ps_baseline_genus, function(x) x / sum(x))
+
+# --- 3. Identify Top N Genera for Plotting Clarity ---
+# Calculate mean abundance of each genus across all samples in ps_baseline_genus_rel
+mean_abund <- taxa_sums(ps_baseline_genus_rel) / nsamples(ps_baseline_genus_rel) # Simpler way to get overall means
+topN_genera <- 15 # Or your desired number
+# Handle cases where total taxa < topN_genera
+num_taxa_to_plot <- min(topN_genera, ntaxa(ps_baseline_genus_rel))
+
+if (num_taxa_to_plot > 0) {
+  top_genera_names <- names(sort(mean_abund, decreasing = TRUE)[1:num_taxa_to_plot])
+  
+  # Prune to top N genera for plotting. This object can be directly used by plot_bar.
+  ps_plot_data_taxa_topN <- prune_taxa(top_genera_names, ps_baseline_genus_rel)
+  
+  # For plot_bar, phyloseq often handles the "Others" category implicitly if you plot relative abundances.
+  # If not, you might need to manually create an "Others" category.
+  # A simpler approach for direct ggplot2 if needed for more control:
+  # df_plot_taxa <- psmelt(ps_plot_data_taxa_topN)
+  
+  # --- 4. Create Stacked Bar Plot ---
+  # Ensure SampleID is unique or make a unique plotting ID if needed for x-axis
+  sample_data(ps_plot_data_taxa_topN)$plot_sample_id <- make.names(sample_names(ps_plot_data_taxa_topN), unique=TRUE)
+
+  taxa_comp_plot_baseline <- plot_bar(ps_plot_data_taxa_topN, x = "plot_sample_id", fill = "Genus") +
+    geom_bar(stat = "identity", position = "stack") +
+    facet_grid(batch ~ carriage_group, scales = "free_x", space = "free_x") + # Facet by batch then carriage_group
+    labs(title = paste("Baseline Top", num_taxa_to_plot, "Genera (Acq vs. Non) by Batch & Group"),
+         x = "Sample", 
+         y = "Relative Abundance") +
+    theme_minimal(base_size = 9) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 5), 
+          legend.position = "bottom",
+          legend.title = element_text(size=8), 
+          legend.text = element_text(size=7),
+          strip.text = element_text(size=8)) +
+    guides(fill = guide_legend(nrow = 3, title.position = "top")) # Adjust legend rows and title position
+
+  print(taxa_comp_plot_baseline)
+
+  # (Optional: Heatmap of mean abundances - code would go here)
+
+} else {
+  message("No taxa to plot after filtering for top genera, or ps_baseline_genus_rel is empty.")
+}
+
+```
+
+## 5. Differential Abundance Analysis with ANCOM-BC2 (Baseline)
+
+We will now use ANCOM-BC2 to identify differentially abundant genera at baseline between "Acquisition_carrier" and "Non_carrier" groups, while controlling for batch and other relevant covariates.
+
+```{r load-ancombc2-baseline-models, include=FALSE}
+# # Define the path to the saved ANCOM-BC2 model results
+ancom_results_rds_file <- file.path(results_dir, "baseline_susceptibility_ancombc2_models.rds")
+
+# # Initialize an empty list for the models
+baseline_ancom_models <- list()
+
+# # Check if the RDS file exists
+if (file.exists(ancom_results_rds_file)) {
+  # If it exists, load the models from the RDS file
+  message(paste("Loading existing ANCOM-BC2 models from:", ancom_results_rds_file))
+  baseline_ancom_models <- readRDS(ancom_results_rds_file)
+  
+  # Optional: Briefly verify the loaded models (e.g., print names)
+  print("Loaded ANCOM-BC2 model names:")
+  print(names(baseline_ancom_models))
+  
+  # Set a flag to skip model generation if they are successfully loaded
+  # This assumes you'll add a condition to your model generation chunk
+  # For example: if (!exists("models_loaded_successfully") || !models_loaded_successfully) { ... run models ... }
+  # For now, we are simply loading them if they exist. The ancombc2-baseline-models chunk will overwrite this object if run.
+  # A more robust approach for skipping re-running would be to comment out the model fitting chunk itself.
+
+} else {
+  message(paste("ANCOM-BC2 model RDS file not found at:", ancom_results_rds_file, ". Models will be generated if the next chunk is run."))
+}
+```
+
+Here is the actual training of the models. No need to run - the upper block already loads a pretrained rds file with the models.
+
+```{r run-ancombc2-baseline-models}
+# Ensure ps_baseline is ready and has necessary sample data columns
+if (nsamples(ps_baseline) == 0) {
+  stop("ps_baseline is empty. Cannot proceed with ANCOM-BC2 analysis.")
+}
+
+# Check for NAs in covariates that will be used in models and handle if necessary
+# For simplicity, this example assumes covariates are mostly complete or NAs are acceptable by ancombc2 
+# (often they lead to sample exclusion for that model).
+# A more robust approach would involve checking and explicitly deciding how to handle NAs (e.g., imputation or removal).
+
+sample_vars <- colnames(data.frame(sample_data(ps_baseline)))
+required_vars_model3 <- c("carriage_group", "batch", "selfsmoking", "boardingschool")
+required_vars_model4 <- c("carriage_group", "batch", "cohort", "selfsmoking", "boardingschool", "AB_month") # Example full model
+
+# Check if all required variables exist
+if (!all(required_vars_model3 %in% sample_vars)) {
+    stop(paste("Missing one or more required covariates for Model 3 in ps_baseline sample_data:", 
+               paste(required_vars_model3[!required_vars_model3 %in% sample_vars], collapse=", ")))
+}
+if (!all(required_vars_model4 %in% sample_vars)) {
+    stop(paste("Missing one or more required covariates for Model 4 in ps_baseline sample_data:",
+               paste(required_vars_model4[!required_vars_model4 %in% sample_vars], collapse=", ")))
+}
+
+# Ensure covariates are factors if they are categorical
+# This should have been handled during data loading, but double-check common ones
+if (!is.factor(sample_data(ps_baseline)$batch)) sample_data(ps_baseline)$batch <- factor(sample_data(ps_baseline)$batch)
+if (!is.factor(sample_data(ps_baseline)$cohort)) sample_data(ps_baseline)$cohort <- factor(sample_data(ps_baseline)$cohort)
+if ("selfsmoking" %in% sample_vars && !is.factor(sample_data(ps_baseline)$selfsmoking)) sample_data(ps_baseline)$selfsmoking <- factor(sample_data(ps_baseline)$selfsmoking)
+if ("boardingschool" %in% sample_vars && !is.factor(sample_data(ps_baseline)$boardingschool)) sample_data(ps_baseline)$boardingschool <- factor(sample_data(ps_baseline)$boardingschool)
+if ("AB_month" %in% sample_vars && !is.factor(sample_data(ps_baseline)$AB_month)) sample_data(ps_baseline)$AB_month <- factor(sample_data(ps_baseline)$AB_month)
+
+
+# Initialize list to store model results
+baseline_ancom_models <- list()
+
+# Set common ANCOM-BC2 parameters
+tax_level_to_analyze <- "Genus"
+set.seed(123) # for reproducibility
+
+# --- Model 1: carriage_group + batch ---
+message("Running ANCOM-BC2 Model 1: carriage_group + batch")
+tryCatch({
+  baseline_ancom_models$m1_cg_batch <- ancombc2(
+    data = ps_baseline,
+    tax_level = tax_level_to_analyze,
+    fix_formula = "carriage_group + batch", # carriage_group is the primary variable of interest
+    p_adj_method = "holm",
+    pseudo_sens = TRUE,
+    prv_cut = 0.10, # Present in at least 10% of samples
+    lib_cut = 1000, # Minimum library size
+    group = "carriage_group", # Explicitly defining the main group for comparison
+    struc_zero = TRUE,
+    neg_lb = TRUE,
+    alpha = 0.05,
+    n_cl = 1, # Use 1 core for sequential running, or 2+ if your machine supports for faster individual model runs
+    verbose = TRUE,
+    pairwise = TRUE # Technically redundant if group has 2 levels, but good practice
+  )
+}, error = function(e) {
+  message("Error in ANCOM-BC2 Model 1: ", e$message)
+  baseline_ancom_models$m1_cg_batch <- list(error = e$message)
+})
+
+# --- Model 2: carriage_group + batch + cohort ---
+message("Running ANCOM-BC2 Model 2: carriage_group + batch + cohort")
+tryCatch({
+  baseline_ancom_models$m2_cg_batch_cohort <- ancombc2(
+    data = ps_baseline,
+    tax_level = tax_level_to_analyze,
+    fix_formula = "carriage_group + batch + cohort",
+    p_adj_method = "holm",
+    pseudo_sens = TRUE,
+    prv_cut = 0.10,
+    lib_cut = 1000,
+    group = "carriage_group",
+    struc_zero = TRUE,
+    neg_lb = TRUE,
+    alpha = 0.05,
+    n_cl = 1,
+    verbose = TRUE,
+    pairwise = TRUE
+  )
+}, error = function(e) {
+  message("Error in ANCOM-BC2 Model 2: ", e$message)
+  baseline_ancom_models$m2_cg_batch_cohort <- list(error = e$message)
+})
+
+# --- Model 3: carriage_group + batch + selfsmoking + boardingschool ---
+# Based on original study's findings for risk factors for NM carriage
+message("Running ANCOM-BC2 Model 3: carriage_group + batch + key demographics (smoking, boarding)")
+tryCatch({
+  baseline_ancom_models$m3_cg_batch_demog <- ancombc2(
+    data = ps_baseline,
+    tax_level = tax_level_to_analyze,
+    fix_formula = "carriage_group + batch + selfsmoking + boardingschool",
+    p_adj_method = "holm",
+    pseudo_sens = TRUE,
+    prv_cut = 0.10,
+    lib_cut = 1000,
+    group = "carriage_group",
+    struc_zero = TRUE,
+    neg_lb = TRUE,
+    alpha = 0.05,
+    n_cl = 1,
+    verbose = TRUE,
+    pairwise = TRUE
+  )
+}, error = function(e) {
+  message("Error in ANCOM-BC2 Model 3: ", e$message)
+  baseline_ancom_models$m3_cg_batch_demog <- list(error = e$message)
+})
+
+# --- Model 4: Full model - carriage_group + batch + cohort + selfsmoking + boardingschool + AB_month ---
+message("Running ANCOM-BC2 Model 4: Full model")
+tryCatch({
+  baseline_ancom_models$m4_cg_batch_cohort_fulldemog <- ancombc2(
+    data = ps_baseline,
+    tax_level = tax_level_to_analyze,
+    fix_formula = "carriage_group + batch + cohort + selfsmoking + boardingschool + AB_month",
+    p_adj_method = "holm",
+    pseudo_sens = TRUE,
+    prv_cut = 0.10,
+    lib_cut = 1000,
+    group = "carriage_group",
+    struc_zero = TRUE,
+    neg_lb = TRUE,
+    alpha = 0.05,
+    n_cl = 1,
+    verbose = TRUE,
+    pairwise = TRUE
+  )
+}, error = function(e) {
+  message("Error in ANCOM-BC2 Model 4: ", e$message)
+  baseline_ancom_models$m4_cg_batch_cohort_fulldemog <- list(error = e$message)
+})
+
+# --- Save the list of models ---
+# Ensure the results directory exists (should be created in setup chunk)
+ancom_results_rds_file <- file.path(results_dir, "baseline_susceptibility_ancombc2_models.rds")
+saveRDS(baseline_ancom_models, file = ancom_results_rds_file)
+message(paste("ANCOM-BC2 model results saved to:", ancom_results_rds_file))
+
+# Print summary of what was run
+print("Summary of ANCOM-BC2 models run:")
+print(names(baseline_ancom_models))
+lapply(baseline_ancom_models, function(model) {
+  if (!is.null(model$res)) {
+    cat(paste("\nModel Formula:", model$formula, "\n"))
+    cat(paste("Number of taxa passed filter:", nrow(model$feature_table), "\n"))
+    # Count significant for the primary comparison (Acquisition_carrier vs Non_carrier)
+    # The exact column name depends on your reference level for carriage_group.
+    # Assuming Non_carrier is reference, the effect for Acquisition_carrier would be in lfc_carriage_groupAcquisition_carrier
+    # and diff_carriage_groupAcquisition_carrier
+    
+    # Find the relevant diff column dynamically
+    diff_col_name <- grep("^diff_carriage_group", names(model$res), value = TRUE)
+    if(length(diff_col_name) == 1){
+        sig_count <- sum(model$res[[diff_col_name]], na.rm = TRUE)
+        cat(paste("Number of significantly DA taxa for carriage_group:", sig_count, "\n"))
+    } else {
+        cat("Could not uniquely identify differential abundance column for carriage_group.\n")
+    }
+    
+  } else if (!is.null(model$error)) {
+    cat(paste("\nModel failed with error:", model$error, "\n"))
+  } else {
+    cat("\nModel object structure not as expected or model did not run.\n")
+  }
+})
+```
+
+
+## 5. [OLD]Differential Abundance Analysis with ANCOM-BC2
 
 We'll use ANCOM-BC2 to identify differentially abundant taxa between the original carriage groups, while accounting for potential confounding factors.
 
