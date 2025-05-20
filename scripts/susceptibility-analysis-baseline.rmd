@@ -36,6 +36,7 @@ library(patchwork)
 library(microbiome)
 library(viridis)
 library(ggpubr)
+library(knitr)
 
 # Source custom functions
 source("../R/preprocessing_functions.R")
@@ -115,6 +116,17 @@ ps_baseline <- subset_samples(ps,
                                 time == "0" & 
                                 carriage_group %in% c("Acquisition_carrier", "Non_carrier") &
                                 batch != "4")
+
+if (nsamples(ps_baseline) > 0) {
+  current_cg_levels <- levels(as.factor(sample_data(ps_baseline)$carriage_group))
+  if ("Non_carrier" %in% current_cg_levels && "Acquisition_carrier" %in% current_cg_levels) {
+    sample_data(ps_baseline)$carriage_group <- factor(sample_data(ps_baseline)$carriage_group, 
+                                                     levels = c("Non_carrier", "Acquisition_carrier"))
+    message("Re-leveled carriage_group in ps_baseline. New reference: ", levels(sample_data(ps_baseline)$carriage_group)[1])
+  } else {
+    warning("Could not re-level carriage_group: one or both expected levels not found.")
+  }
+}
 
 # Check sample sizes for the new ps_baseline
 print("Sample counts for ps_baseline (Time 0, Acquisition vs. Non-carriers, Batch 4 excluded):")
@@ -454,7 +466,37 @@ if (num_taxa_to_plot > 0) {
 
 We will now use ANCOM-BC2 to identify differentially abundant genera at baseline between "Acquisition_carrier" and "Non_carrier" groups, while controlling for batch and other relevant covariates.
 
-```{r ancombc2-baseline-models}
+```{r load-ancombc2-baseline-models, include=FALSE}
+# # Define the path to the saved ANCOM-BC2 model results
+ancom_results_rds_file <- file.path(results_dir, "baseline_susceptibility_ancombc2_models.rds")
+
+# # Initialize an empty list for the models
+baseline_ancom_models <- list()
+
+# # Check if the RDS file exists
+if (file.exists(ancom_results_rds_file)) {
+  # If it exists, load the models from the RDS file
+  message(paste("Loading existing ANCOM-BC2 models from:", ancom_results_rds_file))
+  baseline_ancom_models <- readRDS(ancom_results_rds_file)
+  
+  # Optional: Briefly verify the loaded models (e.g., print names)
+  print("Loaded ANCOM-BC2 model names:")
+  print(names(baseline_ancom_models))
+  
+  # Set a flag to skip model generation if they are successfully loaded
+  # This assumes you'll add a condition to your model generation chunk
+  # For example: if (!exists("models_loaded_successfully") || !models_loaded_successfully) { ... run models ... }
+  # For now, we are simply loading them if they exist. The ancombc2-baseline-models chunk will overwrite this object if run.
+  # A more robust approach for skipping re-running would be to comment out the model fitting chunk itself.
+
+} else {
+  message(paste("ANCOM-BC2 model RDS file not found at:", ancom_results_rds_file, ". Models will be generated if the next chunk is run."))
+}
+```
+
+Here is the actual training of the models. No need to run - the upper block already loads a pretrained rds file with the models.
+
+```{r run-ancombc2-baseline-models}
 # Ensure ps_baseline is ready and has necessary sample data columns
 if (nsamples(ps_baseline) == 0) {
   stop("ps_baseline is empty. Cannot proceed with ANCOM-BC2 analysis.")
@@ -626,46 +668,6 @@ lapply(baseline_ancom_models, function(model) {
   }
 })
 ```
-
-```{r load-ancombc2-baseline-models, include=FALSE}
-# # Define the path to the saved ANCOM-BC2 model results
-ancom_results_rds_file <- file.path(results_dir, "baseline_susceptibility_ancombc2_models.rds")
-
-# # Initialize an empty list for the models
-baseline_ancom_models <- list()
-
-# # Check if the RDS file exists
-if (file.exists(ancom_results_rds_file)) {
-  # If it exists, load the models from the RDS file
-  message(paste("Loading existing ANCOM-BC2 models from:", ancom_results_rds_file))
-  baseline_ancom_models <- readRDS(ancom_results_rds_file)
-  
-  # Optional: Briefly verify the loaded models (e.g., print names)
-  print("Loaded ANCOM-BC2 model names:")
-  print(names(baseline_ancom_models))
-  
-  # Set a flag to skip model generation if they are successfully loaded
-  # This assumes you'll add a condition to your model generation chunk
-  # For example: if (!exists("models_loaded_successfully") || !models_loaded_successfully) { ... run models ... }
-  # For now, we are simply loading them if they exist. The ancombc2-baseline-models chunk will overwrite this object if run.
-  # A more robust approach for skipping re-running would be to comment out the model fitting chunk itself.
-
-} else {
-  message(paste("ANCOM-BC2 model RDS file not found at:", ancom_results_rds_file, ". Models will be generated if the next chunk is run."))
-}
-```
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 ## 5. [OLD]Differential Abundance Analysis with ANCOM-BC2
