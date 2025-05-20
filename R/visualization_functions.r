@@ -684,3 +684,113 @@ plot_longitudinal_pcoa_faceted <- function(dataset,
   
   return(p)
 }
+
+
+#' Plot ANCOM-BC2 Results for All Model Terms
+#'
+#' Automatically detects all log‐fold change contrasts (lfc_*) in an ANCOM-BC2 model output
+#' and produces horizontal bar plots of the top differentially abundant taxa for each contrast.
+#'
+#' @param ancom_model    List; output from ancombc2(), must contain a data.frame `res`
+#' @param top_n          Integer; number of top taxa (by absolute fold-change) to display (default: 20)
+#' @param filter_sensitivity Logical; require passed_ss == TRUE for inclusion (default: TRUE)
+#' @param title_prefix   Character; prefix to use for each plot title (default: "ANCOM-BC2")
+#' @param subtitle       Character; plot subtitle (default: the model formula, if available)
+#' @param fill_values    Named character vector; colors for decrease/increase (default: c("FALSE"="#619CFF","TRUE"="#F8766D"))
+#' @param ggtheme        ggplot2 theme to apply (default: theme_minimal())
+#' @param axis_text_size Numeric; text size for axis labels (default: 10)
+#' @param alpha          Numeric; significance threshold reported (default: 0.05)
+#' @return A list containing:
+#'   - `plots`: named list of ggplot objects for each detected contrast
+#'   - `sig_taxa`: named list of data.frames of the top significant taxa for each contrast
+#' @export
+plot_ancom_all_terms <- function(ancom_model,
+                                 top_n = 20,
+                                 filter_sensitivity = TRUE,
+                                 title_prefix = "ANCOM-BC2",
+                                 subtitle = NULL,
+                                 fill_values = c("FALSE" = "#619CFF", "TRUE" = "#F8766D"),
+                                 ggtheme = ggplot2::theme_minimal(),
+                                 axis_text_size = 10,
+                                 alpha = 0.05) {
+  # Validate input
+  if (!is.list(ancom_model) || is.null(ancom_model$res) || !is.data.frame(ancom_model$res)) {
+    stop("`ancom_model` must be a list containing a data.frame element `res`.")
+  }
+  res <- ancom_model$res
+  
+  # Print model identification
+  message("Processing ANCOM-BC2 model: ", if (!is.null(ancom_model$formula)) ancom_model$formula else "<no formula>")
+  
+  # Detect all LFC columns
+  lfc_cols <- grep("^lfc_", colnames(res), value = TRUE)
+  if (length(lfc_cols) == 0) {
+    stop("No log‐fold change columns (`lfc_…`) found in `ancom_model$res`.")
+  }
+  
+  plots <- list()
+  sig_taxa <- list()
+  
+  # Loop through each contrast
+  for (lfc_col in lfc_cols) {
+    contrast <- sub("^lfc_", "", lfc_col)
+    diff_col <- paste0("diff_", contrast)
+    ss_col   <- paste0("passed_ss_", contrast)
+    if (!diff_col %in% colnames(res)) next
+    
+    # Filter for significant taxa
+    df <- res[res[[diff_col]] == 1 & !is.na(res[[diff_col]]), , drop = FALSE]
+    if (filter_sensitivity && ss_col %in% colnames(df)) {
+      df <- df[df[[ss_col]] == TRUE & !is.na(df[[ss_col]]), , drop = FALSE]
+    }
+    if (nrow(df) == 0) {
+      message(paste0("Term '", contrast, "' has 0 significant LFC values."))
+      next
+    }
+    
+    # Rank by absolute LFC and select top_n
+    df <- df[order(-abs(df[[lfc_col]])), , drop = FALSE]
+    df_top <- head(df, n = top_n)
+    
+    # Prepare plotting data
+    plot_df <- data.frame(
+      taxon = df_top$taxon,
+      lfc   = df_top[[lfc_col]],
+      stringsAsFactors = FALSE
+    )
+    
+    # Construct titles
+    plt_title <- paste(title_prefix, "-", contrast)
+    plt_sub   <- subtitle %||% if (!is.null(ancom_model$formula)) paste("Formula:", ancom_model$formula) else NULL
+    
+    # Build the bar plot
+    p <- ggplot2::ggplot(plot_df, ggplot2::aes(
+      x = reorder(taxon, lfc),
+      y = lfc,
+      fill = lfc > 0
+    )) +
+      ggplot2::geom_bar(stat = "identity") +
+      ggplot2::scale_fill_manual(
+        values = fill_values,
+        labels = c("FALSE" = "Decreased", "TRUE" = "Increased"),
+        name   = paste0("Direction\n(α=", alpha, ")")
+      ) +
+      ggplot2::coord_flip() +
+      ggplot2::labs(
+        title    = plt_title,
+        subtitle = plt_sub,
+        x        = "Taxon",
+        y        = expression(Log[2]~"Fold Change")
+      ) +
+      ggtheme +
+      ggplot2::theme(
+        axis.text.y = ggplot2::element_text(size = axis_text_size),
+        axis.text.x = ggplot2::element_text(size = axis_text_size)
+      )
+    
+    plots[[contrast]]    <- p
+    sig_taxa[[contrast]] <- df_top
+  }
+  
+  return(list(plots = plots, sig_taxa = sig_taxa))
+}

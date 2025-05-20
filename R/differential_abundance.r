@@ -25,6 +25,7 @@
 run_ancombc2 <- function(ps_object, 
                          tax_level = "Genus",
                          formula_str,
+                         rand_formula = NULL,
                          group_var,
                          prv_cut = 0.025,
                          seed = 123) {
@@ -37,7 +38,7 @@ run_ancombc2 <- function(ps_object,
     data = ps_object,
     tax_level = tax_level,
     fix_formula = formula_str,
-    rand_formula = NULL,
+    rand_formula = rand_formula,
     p_adj_method = "holm",
     pseudo_sens = TRUE,
     prv_cut = prv_cut,
@@ -439,3 +440,157 @@ analyze_ancom_model_results <- function(ancom_model,
   
   return(return_list)
 }
+
+#' Prepare Phyloseq Object for ANCOM-BC2 Analysis with Input Validation
+#'
+#' Subset a phyloseq object to a specific time point, filter on two comparison groups,
+#' remove a specified batch, prune zero-sum samples, and re-level the grouping factor.
+#'
+#' @param ps_object A phyloseq object containing the microbiome data.
+#' @param group_levels Character vector of length 2 specifying the comparison levels for the grouping variable.
+#' @param group_var Character string naming the grouping variable in sample_data (default: "carriage_group").
+#' @param time_var Character string naming the time variable in sample_data (default: "time").
+#' @param time_value Value of the time_var to subset on (default: "0").
+#' @param batch_var Character string naming the batch variable in sample_data (default: "batch").
+#' @param drop_batch Value of the batch_var to exclude from the analysis (default: "4").
+#' @return A phyloseq object filtered and relabeled according to the provided parameters.
+#' @export
+prepare_phyloseq <- function(ps_object,
+                             group_levels,
+                             group_var     = "carriage_group",
+                             time_var      = "time",
+                             time_value    = "0",
+                             batch_var     = "batch",
+                             drop_batch    = "4") {
+  # Validate phyloseq object
+  if (!requireNamespace("phyloseq", quietly = TRUE) || !inherits(ps_object, "phyloseq")) {
+    stop("ps_object must be a valid phyloseq object.")
+  }
+  
+  # Validate group_levels
+  if (!is.character(group_levels) || length(group_levels) != 2) {
+    stop("group_levels must be a character vector of length 2 (e.g., c('A','B')).")
+  }
+  
+  # Extract sample data for checks
+  sd_df <- as.data.frame(phyloseq::sample_data(ps_object), stringsAsFactors = FALSE)
+  
+  # Check required columns
+  required_vars <- c(group_var, time_var, batch_var)
+  missing_vars <- setdiff(required_vars, colnames(sd_df))
+  if (length(missing_vars) > 0) {
+    stop(paste("Missing required sample_data columns:", paste(missing_vars, collapse = ", ")))  
+  }
+  
+  # Check time_value exists
+  if (!time_value %in% sd_df[[time_var]]) {
+    stop(sprintf("time_value '%s' not found in column '%s'.", time_value, time_var))
+  }
+  
+  # Warn if drop_batch not present
+  if (!drop_batch %in% sd_df[[batch_var]]) {
+    warning(sprintf("drop_batch '%s' not found in column '%s'. No batch filtering applied.", drop_batch, batch_var))
+  }
+  
+  # Subset samples and prune zeros
+  keep_samples <- sd_df[[time_var]] == time_value &
+    sd_df[[group_var]] %in% group_levels &
+    sd_df[[batch_var]] != drop_batch
+  ps_sub <- phyloseq::prune_samples(keep_samples, ps_object)
+  ps_sub <- phyloseq::prune_taxa(phyloseq::taxa_sums(ps_sub) > 0, ps_sub)
+  
+  # Ensure samples remain
+  if (phyloseq::nsamples(ps_sub) == 0) {
+    stop("No samples remain after subsetting. Check group_levels, time_value, and batch filters.")
+  }
+  
+  # Re-level grouping factor
+  sd_sub <- as.data.frame(phyloseq::sample_data(ps_sub), stringsAsFactors = FALSE)
+  sd_sub[[group_var]] <- factor(sd_sub[[group_var]], levels = group_levels)
+  phyloseq::sample_data(ps_sub) <- sd_sub
+  
+  return(ps_sub)
+}
+
+
+#' Run Multiple ANCOM-BC2 Models with Input Validation
+#'
+#' Loop over a named list of formula strings to run ANCOM-BC2 on a prepared phyloseq object.
+#'
+#' @param ps_object A phyloseq object that has been prepared (e.g., via prepare_phyloseq()).
+#' @param formulas Named list of formula strings. Names will be used in the returned list.
+#' @param group_var Character string naming the grouping variable (default: "carriage_group").
+#' @param tax_level Taxonomic level for analysis (default: "Genus"). Must exist in phyloseq::rank_names(ps_object).
+#' @param prv_cut Prevalence cutoff (a numeric fraction between 0 and 1) for filtering taxa (default: 0.025) ([rdrr.io](https://rdrr.io/github/FrederickHuangLin/ANCOMBC/man/ancombc2.html?utm_source=chatgpt.com)).
+#' @param seed Single numeric seed for reproducibility (default: 123).
+#' @return A named list of ANCOM-BC2 result objects.
+#' @export
+run_ancombc2_models <- function(ps_object,
+                                formulas,
+                                rand_formula = NULL,
+                                group_var = "carriage_group",
+                                tax_level = "Genus",
+                                prv_cut   = 0.025,
+                                seed      = 123) {
+  # Validate ANCOM wrapper exists
+  if (!exists("run_ancombc2", mode = "function")) {
+    stop("Function 'run_ancombc2' must be defined and sourced before calling run_ancombc2_models.")
+  }
+  
+  # Validate phyloseq object
+  if (!requireNamespace("phyloseq", quietly = TRUE) || !inherits(ps_object, "phyloseq")) {
+    stop("ps_object must be a valid phyloseq object.")
+  }
+  
+  # Validate formulas input
+  if (!is.list(formulas) || is.null(names(formulas))) {
+    stop("'formulas' must be a named list of non-empty formula strings.")
+  }
+  for (nm in names(formulas)) {
+    f <- formulas[[nm]]
+    if (!is.character(f) || length(f) != 1 || nchar(f) == 0) {
+      stop(sprintf("Formula '%s' must be a non-empty string.", nm))
+    }
+  }
+  
+  # Check grouping variable in sample_data
+  sd_df <- as.data.frame(phyloseq::sample_data(ps_object), stringsAsFactors = FALSE)
+  if (!group_var %in% colnames(sd_df)) {
+    stop(sprintf("group_var '%s' not found in sample_data(ps_object).", group_var))
+  }
+  
+  # Validate taxonomic level
+  available_ranks <- phyloseq::rank_names(ps_object)
+  if (!tax_level %in% available_ranks) {
+    stop(sprintf("tax_level '%s' not found. Available ranks: %s",
+                 tax_level, paste(available_ranks, collapse = ", ")))
+  }
+  
+  # Validate prevalence cutoff
+  if (!is.numeric(prv_cut) || prv_cut <= 0 || prv_cut >= 1) {
+    stop("prv_cut must be a numeric fraction strictly between 0 and 1.")
+  }
+  
+  # Validate seed
+  if (!is.numeric(seed) || length(seed) != 1) {
+    stop("seed must be a single numeric value.")
+  }
+  
+  # Run models
+  results <- vector("list", length(formulas))
+  names(results) <- names(formulas)
+  for (nm in names(formulas)) {
+    results[[nm]] <- run_ancombc2(
+      ps_object   = ps_object,
+      tax_level   = tax_level,
+      formula_str = formulas[[nm]],
+      rand_formula = rand_formula,
+      group_var   = group_var,
+      prv_cut     = prv_cut,
+      seed        = seed
+    )
+  }
+  
+  return(results)
+}
+
