@@ -594,3 +594,281 @@ run_ancombc2_models <- function(ps_object,
   return(results)
 }
 
+######################## CLAUDE GENERAL ANALYSIS FUNCTION  ######################## 
+
+#' Analyze ANCOM-BC2 Results with Summary Tables and Visualizations
+#'
+#' This function provides a comprehensive analysis of ANCOM-BC2 model results,
+#' including summary tables of significant taxa and comparative visualizations.
+#'
+#' @param ancom_model Output from ancombc2() function
+#' @param model_name Character string to identify the model in outputs
+#' @param alpha Significance threshold (default: 0.05)
+#' @param min_abs_lfc Minimum absolute log fold change to consider (default: 0)
+#' @param save_plots Logical, whether to save plots to file (default: FALSE)
+#' @param plot_dir Directory to save plots if save_plots = TRUE
+#' @return A list containing summary tables and plots
+#' @export
+
+analyze_ancom <- function(ancom_model, 
+                          model_name = "ANCOM-BC2 Model",
+                          alpha = 0.05,
+                          min_abs_lfc = 0,
+                          save_plots = FALSE,
+                          plot_dir = NULL) {
+  
+  # Check if results exist
+  if (is.null(ancom_model$res) || !is.data.frame(ancom_model$res)) {
+    stop("No valid results found in ancom_model$res")
+  }
+  
+  res_df <- ancom_model$res
+  
+  # Identify all contrasts by finding lfc_ columns
+  lfc_cols <- grep("^lfc_", colnames(res_df), value = TRUE)
+  contrasts <- gsub("^lfc_", "", lfc_cols)
+  
+  # Initialize storage for results
+  all_sig_taxa <- list()
+  summary_stats <- data.frame()
+  
+  # Process each contrast
+  for (i in seq_along(contrasts)) {
+    contrast <- contrasts[i]
+    lfc_col <- paste0("lfc_", contrast)
+    diff_col <- paste0("diff_", contrast)
+    ss_col <- paste0("passed_ss_", contrast)
+    q_col <- paste0("q_", contrast)
+    se_col <- paste0("se_", contrast)
+    
+    # Skip if essential columns don't exist
+    if (!all(c(lfc_col, diff_col) %in% colnames(res_df))) next
+    
+    # Extract significant taxa
+    sig_mask <- res_df[[diff_col]] == TRUE & !is.na(res_df[[diff_col]])
+    
+    # Apply sensitivity filter if column exists
+    if (ss_col %in% colnames(res_df)) {
+      sig_mask <- sig_mask & res_df[[ss_col]] == TRUE & !is.na(res_df[[ss_col]])
+    }
+    
+    # Apply minimum LFC filter
+    sig_mask <- sig_mask & abs(res_df[[lfc_col]]) >= min_abs_lfc
+    
+    # Get significant taxa for this contrast
+    sig_taxa <- res_df[sig_mask, ]
+    
+    if (nrow(sig_taxa) > 0) {
+      # Create summary for this contrast
+      contrast_summary <- data.frame(
+        contrast = contrast,
+        taxon = sig_taxa$taxon,
+        lfc = sig_taxa[[lfc_col]],
+        stringsAsFactors = FALSE
+      )
+      
+      # Add other columns if they exist
+      if (se_col %in% colnames(sig_taxa)) {
+        contrast_summary$se <- sig_taxa[[se_col]]
+      }
+      if (q_col %in% colnames(sig_taxa)) {
+        contrast_summary$q_value <- sig_taxa[[q_col]]
+      }
+      
+      all_sig_taxa[[contrast]] <- contrast_summary
+      
+      # Summary statistics
+      summary_stats <- rbind(summary_stats, data.frame(
+        contrast = contrast,
+        n_significant = nrow(sig_taxa),
+        n_increased = sum(sig_taxa[[lfc_col]] > 0),
+        n_decreased = sum(sig_taxa[[lfc_col]] < 0),
+        mean_abs_lfc = mean(abs(sig_taxa[[lfc_col]])),
+        max_abs_lfc = max(abs(sig_taxa[[lfc_col]]))
+      ))
+    }
+  }
+  
+  # Combine all significant taxa into one data frame
+  if (length(all_sig_taxa) > 0) {
+    all_sig_df <- do.call(rbind, all_sig_taxa)
+    rownames(all_sig_df) <- NULL
+  } else {
+    message("No significant taxa found in any contrast.")
+    return(list(summary_stats = NULL, significant_taxa = NULL, plots = list()))
+  }
+  
+  # Print summary
+  cat("\n=== ANCOM-BC2 Analysis Summary for:", model_name, "===\n")
+  cat("\nTotal contrasts analyzed:", length(contrasts), "\n")
+  cat("Contrasts with significant taxa:", nrow(summary_stats), "\n")
+  cat("\nSummary by contrast:\n")
+  print(kable(summary_stats, digits = 3) %>% kable_styling())
+  
+  cat("\nTop 10 taxa by absolute LFC across all contrasts:\n")
+  top_taxa <- all_sig_df %>%
+    arrange(desc(abs(lfc))) %>%
+    head(10)
+  print(kable(top_taxa, digits = 3) %>% kable_styling())
+  
+  # Create visualizations
+  plots <- list()
+  
+  # 1. Heatmap of significant taxa across contrasts
+  if (length(unique(all_sig_df$contrast)) > 1) {
+    # Prepare data for heatmap
+    heatmap_data <- all_sig_df %>%
+      select(taxon, contrast, lfc) %>%
+      tidyr::pivot_wider(names_from = contrast, values_from = lfc, values_fill = 0)
+    
+    # Convert to matrix for heatmap
+    heatmap_matrix <- as.matrix(heatmap_data[, -1])
+    rownames(heatmap_matrix) <- heatmap_data$taxon
+    
+    # Create heatmap using ggplot2
+    heatmap_long <- all_sig_df %>%
+      select(taxon, contrast, lfc)
+    
+    # Order taxa by hierarchical clustering if there are multiple contrasts
+    if (ncol(heatmap_matrix) > 1 && nrow(heatmap_matrix) > 1) {
+      taxa_order <- hclust(dist(heatmap_matrix))$order
+      heatmap_long$taxon <- factor(heatmap_long$taxon, 
+                                   levels = rownames(heatmap_matrix)[taxa_order])
+    }
+    
+    p_heatmap <- ggplot(heatmap_long, aes(x = contrast, y = taxon, fill = lfc)) +
+      geom_tile(color = "white", size = 0.5) +
+      scale_fill_gradient2(low = "blue", mid = "white", high = "red", 
+                           midpoint = 0, name = "Log Fold\nChange") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+            axis.text.y = element_text(size = 8),
+            plot.title = element_text(hjust = 0.5, face = "bold")) +
+      labs(title = paste(model_name, "- Significant Taxa Heatmap"),
+           x = "Contrast", y = "Taxon")
+    
+    plots$heatmap <- p_heatmap
+    print(p_heatmap)
+  }
+  
+  # 2. Dot plot with confidence intervals (if SE available)
+  if ("se" %in% colnames(all_sig_df) && all(!is.na(all_sig_df$se))) {
+    # Calculate confidence intervals
+    all_sig_df$lfc_lower <- all_sig_df$lfc - 1.96 * all_sig_df$se
+    all_sig_df$lfc_upper <- all_sig_df$lfc + 1.96 * all_sig_df$se
+    
+    # Select top taxa by absolute LFC for clarity
+    top_taxa_for_plot <- all_sig_df %>%
+      group_by(taxon) %>%
+      summarise(max_abs_lfc = max(abs(lfc))) %>%
+      arrange(desc(max_abs_lfc)) %>%
+      head(20) %>%
+      pull(taxon)
+    
+    plot_data <- all_sig_df %>%
+      filter(taxon %in% top_taxa_for_plot) %>%
+      mutate(taxon = factor(taxon, levels = rev(top_taxa_for_plot)))
+    
+    p_dotplot <- ggplot(plot_data, aes(x = lfc, y = taxon, color = contrast)) +
+      geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +
+      geom_errorbarh(aes(xmin = lfc_lower, xmax = lfc_upper), 
+                     height = 0.2, alpha = 0.7) +
+      geom_point(size = 3) +
+      theme_bw() +
+      theme(legend.position = "bottom",
+            plot.title = element_text(hjust = 0.5, face = "bold")) +
+      labs(title = paste(model_name, "- Effect Sizes with 95% CI"),
+           x = "Log Fold Change", y = "Taxon", color = "Contrast")
+    
+    plots$dotplot <- p_dotplot
+    print(p_dotplot)
+  }
+  
+  # 3. Volcano-style plot for each contrast (FIXED VERSION)
+  for (contrast in unique(all_sig_df$contrast)) {
+    contrast_data <- res_df
+    lfc_col <- paste0("lfc_", contrast)
+    q_col <- paste0("q_", contrast)
+    diff_col <- paste0("diff_", contrast)
+    ss_col <- paste0("passed_ss_", contrast)
+    
+    if (all(c(lfc_col, q_col) %in% colnames(contrast_data))) {
+      # Pre-calculate -log10(q-value) to avoid issues with aes_string
+      contrast_data$neg_log10_q <- -log10(contrast_data[[q_col]])
+      
+      # Handle infinite values (when q-value = 0)
+      max_finite <- max(contrast_data$neg_log10_q[is.finite(contrast_data$neg_log10_q)], na.rm = TRUE)
+      contrast_data$neg_log10_q[!is.finite(contrast_data$neg_log10_q)] <- max_finite * 1.1
+      
+      # Create significance categories
+      contrast_data$significance <- "Not Significant"
+      
+      if (diff_col %in% colnames(contrast_data)) {
+        contrast_data$significance[contrast_data[[diff_col]] == TRUE] <- "Significant"
+      }
+      
+      if (ss_col %in% colnames(contrast_data) && diff_col %in% colnames(contrast_data)) {
+        contrast_data$significance[contrast_data[[diff_col]] == TRUE & 
+                                     contrast_data[[ss_col]] == TRUE] <- "Sig. & Pass SS"
+      }
+      
+      # Create volcano plot using modern tidy evaluation
+      p_volcano <- ggplot(contrast_data, 
+                          aes(x = !!sym(lfc_col), 
+                              y = neg_log10_q,
+                              color = significance)) +
+        geom_point(alpha = 0.6, size = 2) +
+        geom_vline(xintercept = c(-min_abs_lfc, min_abs_lfc), 
+                   linetype = "dashed", alpha = 0.5) +
+        geom_hline(yintercept = -log10(alpha), 
+                   linetype = "dashed", alpha = 0.5) +
+        scale_color_manual(values = c("Not Significant" = "grey60",
+                                      "Significant" = "orange",
+                                      "Sig. & Pass SS" = "red")) +
+        theme_bw() +
+        theme(legend.position = "bottom",
+              plot.title = element_text(hjust = 0.5, face = "bold")) +
+        labs(title = paste(model_name, "-", contrast, "Volcano Plot"),
+             x = "Log Fold Change",
+             y = expression(-log[10](q-value)),
+             color = "Status")
+      
+      # Add labels for top taxa
+      top_taxa_volcano <- contrast_data %>%
+        filter(significance == "Sig. & Pass SS") %>%
+        arrange(desc(abs(.data[[lfc_col]]))) %>%
+        head(10)
+      
+      if (nrow(top_taxa_volcano) > 0) {
+        p_volcano <- p_volcano +
+          ggrepel::geom_text_repel(data = top_taxa_volcano,
+                                   aes(label = taxon),
+                                   size = 3,
+                                   box.padding = 0.3,
+                                   max.overlaps = 15)
+      }
+      
+      plots[[paste0("volcano_", contrast)]] <- p_volcano
+      print(p_volcano)
+    }
+  }
+  
+  # Save plots if requested
+  if (save_plots && !is.null(plot_dir)) {
+    if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
+    
+    for (plot_name in names(plots)) {
+      filename <- file.path(plot_dir, paste0(model_name, "_", plot_name, ".png"))
+      ggsave(filename, plots[[plot_name]], width = 10, height = 8, dpi = 300)
+    }
+    message("Plots saved to:", plot_dir)
+  }
+  
+  # Return results
+  return(list(
+    summary_stats = summary_stats,
+    significant_taxa = all_sig_df,
+    plots = plots,
+    full_results = res_df
+  ))
+}

@@ -33,6 +33,7 @@ library(ggplot2)
 library(DT)        # For interactive tables
 library(patchwork)   # For combining plots
 library(kableExtra)  # For nicer tables in Rmd
+library(readxl)
 
 # Source custom functions
 # Ensure these paths are correct relative to your Rmd file location
@@ -55,6 +56,41 @@ We load the main phyloseq object (nm_phyloseq_classified_full.rds) created durin
 
 ```{r load-data}
 ps_full <- readRDS(file.path(processed_data_dir, "nm_phyloseq_classified_full.rds"))
+
+# Import demographic data for additional covariates
+demographic_data <- read_excel("../data/raw/demographic data _Jan2022_final.YM.20241230.xlsx")
+
+# Clean and prepare demographic data
+demographic_data <- demographic_data %>%
+  mutate(
+    pid = as.character(pid),  # Ensure pid is character for joining
+    boardingschool = factor(boardingschool),
+    selfsmoking = factor(selfsmoking),
+    secondsmoker = factor(secondsmoker),
+    AB_month = factor(AB_month),  # Antibiotic use in previous month
+    AB_year = factor(AB_year)     # Antibiotic use in previous year
+  )
+
+# Merge relevant demographic variables with sample data
+# First, get the current sample data
+sample_data_df <- data.frame(sample_data(ps_full))
+
+# Ensure 'pid' is preserved as the identifier
+sample_data_with_demo <- sample_data_df %>%
+  left_join(demographic_data %>% 
+              select(pid, boardingschool, selfsmoking, secondsmoker, 
+                     AB_month, AB_year, yearofbirth, family_members), 
+            by = "pid")
+
+# Rebuild the sample_data ensuring original sample names are preserved
+rownames(sample_data_with_demo) <- sample_data_df$SampleID
+
+# Update the phyloseq object with new sample data
+sample_data(ps_full) <- sample_data(sample_data_with_demo)
+
+# Verify the update worked
+print("Updated sample data columns:")
+names(sample_data(ps_full))
 
 # Basic check of the loaded data
 print(ps_full)
@@ -162,14 +198,14 @@ We will define a single, relatively simple model structure for now, focusing on 
 # Fixed effect formula: 
 # - carriage_group * time_factor: Interaction to see if trajectory differs by group
 # - batch: To control for batch effects
-formula_longitudinal_simple_fix <- "carriage_group * time_factor + batch + cohort + selfsmoking + boardingschool + AB_month"
+formula_longitudinal_simple_fix <- "carriage_group * time_factor + batch + selfsmoking + boardingschool + AB_month"
 
 # Random effect formula:
 # - (1 | pid): Random intercept for each participant
 rand_formula_longitudinal_simple <- "(1 | pid)"
 
 # ANCOM-BC2 parameters (can be adjusted later)
-tax_level_to_analyze <- "Genus"
+tax_level_to_analyze <- "Family"
 prevalence_cutoff <- 0.05 # Filter: Taxa must be present in at least 10% of samples [cite: 42]
 ancom_seed <- 12345
 
@@ -379,6 +415,77 @@ if (!is.null(ancom_model_resil$res)) {
 
 } else {
   message("Resilience model (ancom_model_resil) does not contain results to visualize.")
+}
+
+```
+
+```{r claude-ancom-analysis-susc}
+
+## 6.3 Comprehensive Analysis of Susceptibility Model
+
+# Ensure ggrepel is loaded for the volcano plots
+if (!requireNamespace("ggrepel", quietly = TRUE)) {
+  message("Installing ggrepel for better plot labels...")
+  install.packages("ggrepel")
+}
+library(ggrepel)
+
+if (!is.null(ancom_model_susc$res)) {
+  message("\n=== Comprehensive Analysis of Susceptibility Model ===\n")
+  
+  susc_analysis <- analyze_ancom(
+    ancom_model = ancom_model_susc,
+    model_name = "Susceptibility (Non vs Acquisition)",
+    alpha = 0.05,
+    min_abs_lfc = 0.5,  # Focus on larger effect sizes
+    save_plots = FALSE
+    # plot_dir = file.path(results_dir_longitudinal, "susceptibility_plots")
+  )
+  
+  # Save the analysis results
+  saveRDS(susc_analysis,
+          file = file.path(results_dir_longitudinal, "susceptibility_comprehensive_analysis.rds"))
+  
+  # Export significant taxa table
+  if (!is.null(susc_analysis$significant_taxa)) {
+    write.csv(susc_analysis$significant_taxa,
+              file = file.path(results_dir_longitudinal, "susceptibility_significant_taxa.csv"),
+              row.names = FALSE)
+  }
+  
+} else {
+  message("No results available for susceptibility model comprehensive analysis.")
+}
+
+```
+
+```{r claude-ancom-analysis-resil}
+
+if (!is.null(ancom_model_resil$res)) {
+  message("\n=== Comprehensive Analysis of Resilience Model ===\n")
+  
+  resil_analysis <- analyze_ancom(
+    ancom_model = ancom_model_resil,
+    model_name = "Resilience (Persistent vs Clearance)",
+    alpha = 0.05,
+    min_abs_lfc = 0.5,  # Focus on larger effect sizes
+    save_plots = TRUE,
+    plot_dir = file.path(results_dir_longitudinal, "resilience_plots")
+  )
+  
+  # Save the analysis results
+  saveRDS(resil_analysis, 
+          file = file.path(results_dir_longitudinal, "resilience_comprehensive_analysis.rds"))
+  
+  # Export significant taxa table
+  if (!is.null(resil_analysis$significant_taxa)) {
+    write.csv(resil_analysis$significant_taxa,
+              file = file.path(results_dir_longitudinal, "resilience_significant_taxa.csv"),
+              row.names = FALSE)
+  }
+  
+} else {
+  message("No results available for resilience model comprehensive analysis.")
 }
 
 ```
