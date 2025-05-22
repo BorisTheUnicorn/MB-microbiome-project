@@ -1,0 +1,406 @@
+---
+title: "NM Microbiome - Longitudinal Carriage Dynamics Analysis"
+author: "Orr Tobaly & Nikol Elyashov"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10, # Adjusted for potentially wider plots
+  fig.height = 7
+)
+```
+
+# 1. Setup and Library Loading
+This section loads the necessary R packages for our analysis. We'll use phyloseq for microbiome data handling, ANCOMBC for differential abundance testing, dplyr for data manipulation, and ggplot2 for plotting.
+
+```{r setup}
+# Core packages
+library(phyloseq)
+library(ANCOMBC) 
+library(dplyr)
+library(ggplot2)
+library(DT)        # For interactive tables
+library(patchwork)   # For combining plots
+library(kableExtra)  # For nicer tables in Rmd
+
+# Source custom functions
+# Ensure these paths are correct relative to your Rmd file location
+source("../R/preprocessing_functions.R") 
+source("../R/differential_abundance.R")
+source("../R/visualization_functions.R") 
+
+# Define paths
+processed_data_dir <- "../data/processed_to_ANCOM/"
+results_dir_longitudinal <- "../results/longitudinal_analysis/"
+
+# Create results directory if it doesn't exist
+if(!dir.exists(results_dir_longitudinal)) {
+  dir.create(results_dir_longitudinal, recursive = TRUE)
+}
+```
+
+# 2. Load Preprocessed Full Phyloseq Object
+We load the main phyloseq object (nm_phyloseq_classified_full.rds) created during the preprocessing phase. This object contains all samples, time points, and the crucial carriage_group classifications.
+
+```{r load-data}
+ps_full <- readRDS(file.path(processed_data_dir, "nm_phyloseq_classified_full.rds"))
+
+# Basic check of the loaded data
+print(ps_full)
+message("Initial sample counts by carriage group and time:")
+print(table(sample_data(ps_full)$carriage_group, sample_data(ps_full)$time, dnn=c("Carriage Group", "Time Point")))
+message("Initial sample counts by batch:")
+print(table(sample_data(ps_full)$batch, dnn="Batch"))
+```
+
+# 3. Initial Data Preparation
+Here, we perform common data preparation steps applicable before splitting the data for specific analyses. This includes removing batch 4, ensuring correct variable types for modeling, and creating the factor version of our time variable.
+
+```{r data-prep}
+# Filter out batch "4" as it's problematic and has very few samples [cite: 2178]
+ps_analysis_base <- subset_samples(ps_full, batch != "4")
+# Prune taxa that may now have zero sums after sample subsetting
+ps_analysis_base <- prune_taxa(taxa_sums(ps_analysis_base) > 0, ps_analysis_base)
+
+# Ensure 'pid' (participant ID) is a factor for random effects
+sample_data(ps_analysis_base)$pid <- factor(sample_data(ps_analysis_base)$pid)
+
+# Create 'time_factor' from the 'time' variable (0, 2, 4 months)
+# This will be used in our models, treating time as categorical.
+sample_data(ps_analysis_base)$time_factor <- factor(
+  sample_data(ps_analysis_base)$time,
+  levels = c("0", "2", "4"),
+  labels = c("T0", "T2", "T4") # T0 = Baseline, T2 = 2 Months, T4 = 4 Months
+)
+# Set "T0" (Baseline) as the reference level for time_factor
+sample_data(ps_analysis_base)$time_factor <- relevel(sample_data(ps_analysis_base)$time_factor, ref = "T0")
+
+# Ensure 'batch' is a factor
+sample_data(ps_analysis_base)$batch <- factor(sample_data(ps_analysis_base)$batch)
+
+message(paste("Total samples after removing Batch 4:", nsamples(ps_analysis_base)))
+message("Sample distribution for ps_analysis_base:")
+print(table(sample_data(ps_analysis_base)$carriage_group, sample_data(ps_analysis_base)$time_factor, dnn=c("Carriage Group", "Time Factor")))
+```
+
+# 4. Prepare Phyloseq Objects for Specific Analyses
+We will create two separate phyloseq objects:
+
+ps_susc: For susceptibility analysis (Non-carriers vs. Acquisition carriers).
+ps_resil: For resilience analysis (Persistent carriers vs. Clearance carriers).
+
+## 4.1 Susceptibility Analysis Subset (ps_susc)
+Focusing on individuals who were Non-carriers versus those who acquired NM. "Non_carrier" will be the reference group.
+
+```{r susc-subset}
+
+# Filter for relevant carriage groups
+ps_susc <- subset_samples(ps_analysis_base, 
+                          carriage_group %in% c("Non_carrier", "Acquisition_carrier"))
+ps_susc <- prune_taxa(taxa_sums(ps_susc) > 0, ps_susc) # Prune taxa
+
+# Set "Non_carrier" as the reference level for carriage_group
+sample_data(ps_susc)$carriage_group <- factor(
+  sample_data(ps_susc)$carriage_group, 
+  levels = c("Non_carrier", "Acquisition_carrier")
+)
+
+message("Susceptibility analysis (ps_susc) details:")
+print(ps_susc)
+print(table(sample_data(ps_susc)$carriage_group, sample_data(ps_susc)$time_factor, dnn=c("Carriage Group (Susc.)", "Time Factor")))
+print(table(sample_data(ps_susc)$batch, dnn="Batch (Susc.)"))
+
+```
+
+## 4.2 Resilience Analysis Subset (ps_resil)
+Focusing on individuals who were Persistent carriers versus those who cleared NM. "Persistent_carrier" will be the reference group.
+
+```{r resil-subset}
+
+# Filter for relevant carriage groups
+ps_resil <- subset_samples(ps_analysis_base, 
+                           carriage_group %in% c("Persistent_carrier", "Clearance_carrier"))
+ps_resil <- prune_taxa(taxa_sums(ps_resil) > 0, ps_resil) # Prune taxa
+
+# Set "Persistent_carrier" as the reference level for carriage_group
+sample_data(ps_resil)$carriage_group <- factor(
+  sample_data(ps_resil)$carriage_group, 
+  levels = c("Persistent_carrier", "Clearance_carrier")
+)
+
+message("Resilience analysis (ps_resil) details:")
+print(ps_resil)
+print(table(sample_data(ps_resil)$carriage_group, sample_data(ps_resil)$time_factor, dnn=c("Carriage Group (Resil.)", "Time Factor")))
+print(table(sample_data(ps_resil)$batch, dnn="Batch (Resil.)"))
+
+# Check if any group has become too small after subsetting for specific time points/batches
+# This is a common issue that can affect model stability.
+message("Detailed breakdown for ps_susc (Carriage Group x Time Factor x Batch):")
+print(kable(as.data.frame.matrix(table(sample_data(ps_susc)$carriage_group, interaction(sample_data(ps_susc)$time_factor, sample_data(ps_susc)$batch))), caption = "ps_susc counts") %>% kable_styling())
+
+message("Detailed breakdown for ps_resil (Carriage Group x Time Factor x Batch):")
+print(kable(as.data.frame.matrix(table(sample_data(ps_resil)$carriage_group, interaction(sample_data(ps_resil)$time_factor, sample_data(ps_resil)$batch))), caption = "ps_resil counts") %>% kable_styling())
+
+```
+
+# 5. Define and Run Longitudinal ANCOM-BC2 Model
+We will define a single, relatively simple model structure for now, focusing on the interaction between carriage_group and time_factor, while controlling for batch. We will use participant ID (pid) for random intercepts to account for repeated measures.
+
+```{r def-basic-model}
+
+# Fixed effect formula: 
+# - carriage_group * time_factor: Interaction to see if trajectory differs by group
+# - batch: To control for batch effects
+formula_longitudinal_simple_fix <- "carriage_group * time_factor + batch + cohort + selfsmoking + boardingschool + AB_month"
+
+# Random effect formula:
+# - (1 | pid): Random intercept for each participant
+rand_formula_longitudinal_simple <- "(1 | pid)"
+
+# ANCOM-BC2 parameters (can be adjusted later)
+tax_level_to_analyze <- "Genus"
+prevalence_cutoff <- 0.05 # Filter: Taxa must be present in at least 10% of samples [cite: 42]
+ancom_seed <- 12345
+
+```
+
+## 5.1 Run ANCOM-BC2 for Susceptibility Analysis
+
+```{r run-ancom-susc-analysis}
+
+# This chunk can take a significant amount of time to run.
+ancom_susc_long_results_file <- file.path(results_dir_longitudinal, "ancom_susc_longitudinal_simple_direct.rds")
+
+if (file.exists(ancom_susc_long_results_file) && FALSE) { # Set to TRUE to load if exists
+  message("Loading previously run ANCOM-BC2 susceptibility results (direct call)...")
+  ancom_model_susc <- readRDS(ancom_susc_long_results_file)
+} else {
+  message("Running ANCOM-BC2 directly for Susceptibility (Non_carrier vs Acquisition_carrier)...")
+  # Ensure ps_susc has enough samples and groups after filtering
+  if(nsamples(ps_susc) > 0 && length(levels(sample_data(ps_susc)$carriage_group)) > 1){
+    
+    set.seed(ancom_seed) # Make sure seed is set for reproducibility
+    
+    ancom_model_susc <- ANCOMBC::ancombc2(
+      data = ps_susc,                       # Phyloseq object
+      # assay_name = "counts",              # Default for phyloseq, or specify if different
+      tax_level = tax_level_to_analyze,     # e.g., "Genus"
+      fix_formula = formula_longitudinal_simple_fix, # Your defined fixed effects
+      rand_formula = rand_formula_longitudinal_simple, # Your defined random effects
+      p_adj_method = "holm",                # [cite: 63]
+      pseudo_sens = TRUE,                   # [cite: 9]
+      prv_cut = prevalence_cutoff,          # Your defined prevalence cutoff
+      lib_cut = 1000,                       # [cite: 42]
+      s0_perc = 0.05,                       # Desired value (tutorial default) [cite: 42]
+      group = "carriage_group",             # Primary grouping variable for pairwise
+      struc_zero = TRUE,                    # Detect structural zeros [cite: 25]
+      neg_lb = TRUE,                        # Allow negative LFC CI [cite: 42]
+      alpha = 0.05,                         # Significance level [cite: 42]
+      n_cl = 2,                             # Number of cores
+      global = TRUE,                        # Perform global tests
+      pairwise = TRUE,                      # Perform pairwise comparisons for 'group'
+      dunnet = FALSE,                       # Not using Dunnett's style here
+      trend = FALSE,                        # Not applicable with factor time for trend testing
+      # iter_control = list(tol = 1e-5, max_iter = 20, verbose = FALSE), # ANCOMBC defaults
+      # em_control = list(tol = 1e-5, max_iter = 100),                    # ANCOMBC defaults
+      verbose = TRUE
+    )
+    saveRDS(ancom_model_susc, file = ancom_susc_long_results_file)
+    message("ANCOM-BC2 for susceptibility (longitudinal, direct call) run and saved.")
+  } else {
+    message("Skipping ANCOM-BC2 for Susceptibility: Not enough samples or groups in ps_susc.")
+    ancom_model_susc <- list(error = "Insufficient samples/groups in ps_susc for ANCOM-BC2.")
+  }
+}
+
+# Briefly check the structure or errors
+if(!is.null(ancom_model_susc$error)){
+  print(ancom_model_susc$error)
+} else if (!is.null(ancom_model_susc$res)){
+  message("Susceptibility model (direct call) results (head of res):")
+  print(head(ancom_model_susc$res))
+}
+
+```
+
+## 5.2 Run ANCOM-BC2 for Resilience Analysis
+
+```{r run-ancom-resil-analysis}
+
+# This chunk can take a significant amount of time to run.
+ancom_resil_long_results_file <- file.path(results_dir_longitudinal, "ancom_resil_longitudinal_simple_direct.rds")
+
+if (file.exists(ancom_resil_long_results_file) && FALSE) { # Set to TRUE to load if exists
+  message("Loading previously run ANCOM-BC2 resilience results (direct call)...")
+  ancom_model_resil <- readRDS(ancom_resil_long_results_file)
+} else {
+  message("Running ANCOM-BC2 directly for Resilience (Persistent_carrier vs Clearance_carrier)...")
+  if(nsamples(ps_resil) > 0 && length(levels(sample_data(ps_resil)$carriage_group)) > 1){
+    
+    set.seed(ancom_seed) # Ensure reproducibility
+    
+    ancom_model_resil <- ANCOMBC::ancombc2(
+      data = ps_resil,
+      tax_level = tax_level_to_analyze,
+      fix_formula = formula_longitudinal_simple_fix,
+      rand_formula = rand_formula_longitudinal_simple,
+      p_adj_method = "holm",
+      pseudo_sens = TRUE,
+      prv_cut = prevalence_cutoff,
+      lib_cut = 1000,
+      s0_perc = 0.05, 
+      group = "carriage_group",
+      struc_zero = TRUE,
+      neg_lb = TRUE,
+      alpha = 0.05,
+      n_cl = 2, 
+      global = TRUE,
+      pairwise = TRUE,
+      dunnet = FALSE,
+      trend = FALSE,
+      verbose = TRUE
+    )
+    saveRDS(ancom_model_resil, file = ancom_resil_long_results_file)
+    message("ANCOM-BC2 for resilience (longitudinal, direct call) run and saved.")
+  } else {
+    message("Skipping ANCOM-BC2 for Resilience: Not enough samples or groups in ps_resil.")
+    ancom_model_resil <- list(error = "Insufficient samples/groups in ps_resil for ANCOM-BC2.")
+  }
+}
+
+# Briefly check the structure or errors
+if(!is.null(ancom_model_resil$error)){
+  print(ancom_model_resil$error)
+} else if (!is.null(ancom_model_resil$res)){
+  message("Resilience model (direct call) results (head of res):")
+  print(head(ancom_model_resil$res))
+}
+
+```
+
+# 6. Summarize and Visualize Longitudinal ANCOM-BC2 Results
+We will use plot_ancom_all_terms to get an overview of all significant terms from each model. We are particularly interested in terms involving carriage_group and its interaction with time_factor.
+
+## 6.1 Susceptibility Model Visualization
+
+```{r susc-viz}
+
+if (!is.null(ancom_model_susc$res)) {
+  message("--- Visualizing Susceptibility Model Results ---")
+  vis_susc_long <- plot_ancom_all_terms(
+    ancom_model = ancom_model_susc,
+    top_n = 15, # Show top 15 significant taxa per contrast
+    filter_sensitivity = TRUE,
+    title_prefix = "Susceptibility (Longitudinal)",
+    subtitle = ancom_model_susc$formula # Assuming formula is stored in the output
+  )
+
+  if (length(vis_susc_long$plots) > 0) {
+    for (contrast in names(vis_susc_long$plots)) {
+      # Focus on interaction terms involving carriage_group and time_factor
+      if (grepl("carriage_group", contrast) && grepl("time_factor", contrast)) {
+        message(paste("Plotting interaction contrast:", contrast))
+        print(vis_susc_long$plots[[contrast]])
+        if (nrow(vis_susc_long$sig_taxa[[contrast]]) > 0) {
+          print(DT::datatable(vis_susc_long$sig_taxa[[contrast]], 
+                              caption = paste("Significant Taxa:", contrast)))
+        }
+      } else if (grepl("carriage_group", contrast) && !grepl(":", contrast)) { # Main effect of carriage group
+         message(paste("Plotting main effect contrast:", contrast))
+         print(vis_susc_long$plots[[contrast]])
+         if (nrow(vis_susc_long$sig_taxa[[contrast]]) > 0) {
+          print(DT::datatable(vis_susc_long$sig_taxa[[contrast]], 
+                              caption = paste("Significant Taxa:", contrast)))
+        }
+      }
+    }
+  } else {
+    message("No plots generated for the susceptibility model.")
+  }
+  
+  # Save the full visualization list object
+  saveRDS(vis_susc_long, file = file.path(results_dir_longitudinal, "vis_ancom_susc_longitudinal.rds"))
+  
+} else {
+  message("Susceptibility model (ancom_model_susc) does not contain results to visualize.")
+}
+
+```
+
+## 6.2 Resilience Model Visualization
+
+```{r resil-viz}
+
+if (!is.null(ancom_model_resil$res)) {
+  message("--- Visualizing Resilience Model Results ---")
+  vis_resil_long <- plot_ancom_all_terms(
+    ancom_model = ancom_model_resil,
+    top_n = 15,
+    filter_sensitivity = TRUE,
+    title_prefix = "Resilience (Longitudinal)",
+    subtitle = ancom_model_resil$formula # Assuming formula is stored
+  )
+
+  if (length(vis_resil_long$plots) > 0) {
+    for (contrast in names(vis_resil_long$plots)) {
+      if (grepl("carriage_group", contrast) && grepl("time_factor", contrast)) {
+        message(paste("Plotting interaction contrast:", contrast))
+        print(vis_resil_long$plots[[contrast]])
+        if (nrow(vis_resil_long$sig_taxa[[contrast]]) > 0) {
+          print(DT::datatable(vis_resil_long$sig_taxa[[contrast]], 
+                              caption = paste("Significant Taxa:", contrast)))
+        }
+      } else if (grepl("carriage_group", contrast) && !grepl(":", contrast)) { # Main effect of carriage group
+         message(paste("Plotting main effect contrast:", contrast))
+         print(vis_resil_long$plots[[contrast]])
+         if (nrow(vis_resil_long$sig_taxa[[contrast]]) > 0) {
+          print(DT::datatable(vis_resil_long$sig_taxa[[contrast]], 
+                              caption = paste("Significant Taxa:", contrast)))
+        }
+      }
+    }
+  } else {
+    message("No plots generated for the resilience model.")
+  }
+  
+  # Save the full visualization list object
+  saveRDS(vis_resil_long, file = file.path(results_dir_longitudinal, "vis_ancom_resil_longitudinal.rds"))
+
+} else {
+  message("Resilience model (ancom_model_resil) does not contain results to visualize.")
+}
+
+```
+
+# 7. Interpretation of Longitudinal Results
+(This section will be filled in after reviewing the actual ANCOM-BC2 outputs from the models above.)
+
+Our primary focus for interpretation will be on:
+
+* Significant interaction terms (carriage_group:time_factor): These indicate taxa whose trajectories over time differ significantly between the comparison groups (e.g., Acquisition vs. Non-carriers, or Clearance vs. Persistent carriers).
+    * For susceptibility, we'll look for taxa that change differently in the Acquisition_carrier group compared to Non_carrier group as time progresses from T0 to T2 and T0 to T4.
+    * For resilience, we'll look for taxa that change differently in the Clearance_carrier group compared to Persistent_carrier group over time.
+    
+* Main effects of carriage_group: These show overall differences between the groups at the reference time point (T0), controlling for batch and the average time effect.
+
+* Main effects of time_factor: These show overall changes from T0 to T2, and T0 to T4, for the reference carriage group, controlling for batch and the average group effect.
+
+We will examine the direction (LFC) and significance (q-value) of these effects, particularly for taxa passing the sensitivity score.
+
+# 8. Session Info
+
+```{r sesion-info}
+sessionInfo()
+```
+

@@ -653,8 +653,7 @@ for(cmp in names(all_ancom_results)) {
 
 ##6. vis check for chunk 5 models:
 
-
-```{r visualize-ancom-results}
+```{r summarize-carriage-group-ancom-results, echo=FALSE}
 # Ensure the combined ANCOM-BC2 results are loaded
 if (!exists("all_ancom_results")) {
   stop("all_ancom_results not found. Run the load-ancombc2-all-models chunk first.")
@@ -662,36 +661,150 @@ if (!exists("all_ancom_results")) {
 
 # Loop over each comparison and each model within it
 for (cmp in names(all_ancom_results)) {
-  message("=== Visualizing contrasts for comparison: ", cmp, " ===")
+  message("=== Processing results for comparison: ", cmp, " ===")
   models_list <- all_ancom_results[[cmp]]
   
   for (model_name in names(models_list)) {
-    ancom_model <- models_list[[model_name]]
+    ancom_model_result <- models_list[[model_name]] # This is the full output from ancombc2()
     
     # Skip models that failed to run
-    if (!is.null(ancom_model$error)) {
-      warning("Skipping visualization for ", cmp, "/", model_name, " (error: ", ancom_model$error, ")")
+    if (!is.null(ancom_model_result$error)) {
+      warning("Skipping ", cmp, "/", model_name, " (error: ", ancom_model_result$error, ")")
       next
     }
     
-    # Generate plots for all terms in this model
-    vis <- plot_ancom_all_terms(
-      ancom_model        = ancom_model,
-      top_n              = 20,
-      filter_sensitivity = TRUE,
+    # Ensure the 'res' data frame exists within the ancom_model_result
+    if (is.null(ancom_model_result$res) || !is.data.frame(ancom_model_result$res)) {
+      warning("Skipping ", cmp, "/", model_name, " (no 'res' data frame found).")
+      next
+    }
+    
+    # Generate plots for ALL terms in this model using your existing function.
+    vis_output <- plot_ancom_all_terms(
+      ancom_model        = ancom_model_result, 
+      top_n              = 20, 
+      filter_sensitivity = TRUE, 
       title_prefix       = paste("ANCOM-BC2", cmp, model_name),
-      subtitle           = NULL
+      subtitle           = NULL 
     )
     
-    # Print each contrast plot with updated title
-    for (contrast in names(vis$plots)) {
-      print(
-        vis$plots[[contrast]] +
-        ggplot2::ggtitle(paste(cmp, model_name, "-", contrast))
-      )
+    # Loop through each contrast for which a plot was potentially generated
+    if (length(vis_output$plots) > 0) {
+      for (contrast_name_from_plot_func in names(vis_output$plots)) {
+        
+        # Only proceed if the contrast is related to "carriage_group"
+        if (grepl("carriage_group", contrast_name_from_plot_func)) {
+          
+          # 1. Print the plot for THIS "carriage_group" contrast
+          plot_title <- paste(cmp, model_name, "-", contrast_name_from_plot_func)
+          if (!is.null(vis_output$plots[[contrast_name_from_plot_func]])) {
+            print(
+              vis_output$plots[[contrast_name_from_plot_func]] +
+                ggplot2::ggtitle(plot_title)
+            )
+          } else {
+            message(paste0("Plot object for contrast `", contrast_name_from_plot_func, "` is NULL."))
+          }
+          
+          # 2. Print the detailed table for THIS "carriage_group" contrast
+          res_df_for_table <- ancom_model_result$res 
+          
+          lfc_col_for_table <- paste0("lfc_", contrast_name_from_plot_func)
+          diff_col_for_table <- paste0("diff_", contrast_name_from_plot_func)
+          q_col_for_table <- paste0("q_", contrast_name_from_plot_func)
+          ss_col_for_table <- paste0("passed_ss_", contrast_name_from_plot_func)
+          
+          if (!all(c(lfc_col_for_table, diff_col_for_table) %in% colnames(res_df_for_table))) {
+            message(paste0("Skipping table for ", cmp, "/", model_name, " - Contrast: `", contrast_name_from_plot_func, 
+                           "` (LFC or Diff column missing in ancom_model_result$res)."))
+            next 
+          }
+
+          significant_taxa_table_data <- res_df_for_table[
+            res_df_for_table[[diff_col_for_table]] == TRUE & !is.na(res_df_for_table[[diff_col_for_table]]), 
+          ]
+          
+          if (ss_col_for_table %in% colnames(significant_taxa_table_data)) {
+            significant_taxa_table_data <- significant_taxa_table_data[
+              significant_taxa_table_data[[ss_col_for_table]] == TRUE & !is.na(significant_taxa_table_data[[ss_col_for_table]]),
+            ]
+          }
+          
+          if (nrow(significant_taxa_table_data) > 0) {
+            significant_taxa_table_data <- significant_taxa_table_data[
+              order(-abs(significant_taxa_table_data[[lfc_col_for_table]])), 
+            ]
+            
+            cols_for_display <- c("taxon", lfc_col_for_table)
+            if (q_col_for_table %in% colnames(significant_taxa_table_data)) {
+              cols_for_display <- c(cols_for_display, q_col_for_table)
+            }
+            if (diff_col_for_table %in% colnames(significant_taxa_table_data)) {
+              cols_for_display <- c(cols_for_display, diff_col_for_table)
+            }
+            if (ss_col_for_table %in% colnames(significant_taxa_table_data)) {
+              cols_for_display <- c(cols_for_display, ss_col_for_table)
+            }
+            cols_for_display <- intersect(cols_for_display, colnames(significant_taxa_table_data))
+            table_df_to_print <- significant_taxa_table_data[, cols_for_display, drop = FALSE]
+            
+            # Print table header using cat
+            table_header_text <- paste0("Summary Table for: ", cmp, " | Model: ", model_name, " | Contrast: `", contrast_name_from_plot_func, "`")
+            cat(paste0("\n\n--- ", table_header_text, " ---\n")) # Using cat for a distinct header
+            
+            # Print the data frame directly
+            print(table_df_to_print, row.names = FALSE)
+            cat("\n--- End of Table ---\n\n") # Footer for clarity
+          }
+        } # End if (grepl("carriage_group", ...))
+      } # End loop through contrasts from vis_output$plots
+    } else {
+      message(paste0("No plots were generated by plot_ancom_all_terms for ", cmp, "/", model_name, "."))
     }
-  }
-}
+  } # End loop through models_list
+} # End loop through all_ancom_results
+```
+
+```{r visualize-ancom-results}
+# redundant, see chunk above
+
+# # Ensure the combined ANCOM-BC2 results are loaded
+# if (!exists("all_ancom_results")) {
+#   stop("all_ancom_results not found. Run the load-ancombc2-all-models chunk first.")
+# }
+# 
+# # Loop over each comparison and each model within it
+# for (cmp in names(all_ancom_results)) {
+#   message("=== Visualizing contrasts for comparison: ", cmp, " ===")
+#   models_list <- all_ancom_results[[cmp]]
+#   
+#   for (model_name in names(models_list)) {
+#     ancom_model <- models_list[[model_name]]
+#     
+#     # Skip models that failed to run
+#     if (!is.null(ancom_model$error)) {
+#       warning("Skipping visualization for ", cmp, "/", model_name, " (error: ", ancom_model$error, ")")
+#       next
+#     }
+#     
+#     # Generate plots for all terms in this model
+#     vis <- plot_ancom_all_terms(
+#       ancom_model        = ancom_model,
+#       top_n              = 20,
+#       filter_sensitivity = TRUE,
+#       title_prefix       = paste("ANCOM-BC2", cmp, model_name),
+#       subtitle           = NULL
+#     )
+#     
+#     # Print each contrast plot with updated title
+#     for (contrast in names(vis$plots)) {
+#       print(
+#         vis$plots[[contrast]] +
+#         ggplot2::ggtitle(paste(cmp, model_name, "-", contrast))
+#       )
+#     }
+#   }
+# }
 
 ```
 
